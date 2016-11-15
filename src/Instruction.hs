@@ -3,8 +3,9 @@ module Instruction
   Instruction(..),
   Flags(..),
   Opcode,
-  RelativeAddress
-  AbsoluteAddress
+  RelativeAddress,
+  AbsoluteAddress,
+  getOpcode
 )
 
 import Data.ByteString (ByteString)
@@ -21,6 +22,13 @@ data Flags = {
   flagsE :: !Bool
 }
 
+data Argument = {
+
+}
+
+-- N.B. this should be ORable together
+type ArgKind
+
 flagsToByte :: Flags -> Word8
 flagsToByte (Flags n i x b p e) = s n 0 $ s i 1 $ s x 2 $ s b 3 $ s p 4 $ s e 5 zeroBits
   where s b i a = (b ? setBit : clearBit) a i
@@ -34,9 +42,18 @@ type RelativeAddress = Word16 -- 0 <= disp <= 4095
 type AbsoluteAddress = Word32 -- -2048 <= disp <= 2047
 data Instruction = Format1 Opcode | Format2 Opcode Flags | Format3 Opcode Flags RelativeAddress | Format4 Word8 Flags AbsoluteAddress
 
--- TODO: binary
+-- TODO: binary builder
 
-getOpcode :: ByteString -> Maybe Word8
+mnemonics :: [ByteString]
+mnemonics = ["ADD", "ADDR", "CLEAR", "COMP", "COMPR", "DIV", "DIVR",
+	    "HIO", "J", "JEQ", "JGT", "JLT", "JSUB", "LDA", "LDB",
+	    "LDCH", "LDF", "LDL", "LDS", "LDT", "LDX", "LPS", "MUL",
+	    "MULR", "OR", "RD", "RMO", "RSUB", "SHIFTL", "SHIFTR",
+            "SIO", "SSK", "STA", "STB", "STCH", "STI", "STL", "STS",
+            "STSW", "STT", "STX", "SUB", "SUBR", "SVC", "TD", "TIO",
+	    "TIX", "TIXR", "WD"]
+
+getOpcode :: ByteString -> Maybe Opcode
 getOpcode "ADD"    = Just 0x18
 getOpcode "ADDR"   = Just 0x90
 getOpcode "AND"    = Just 0x40
@@ -88,3 +105,6 @@ getOpcode "TIX"    = Just 0x2C
 getOpcode "TIXR"   = Just 0xB8
 getOpcode "WD"     = Just 0xDC
 getOpcode _ = Nothing
+
+argumentsKind :: Opcode -> [ArgumentKind]
+argumentsKind op = []
