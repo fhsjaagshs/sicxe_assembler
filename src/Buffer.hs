@@ -46,6 +46,7 @@ import Foreign.ForeignPtr
 import Foreign.Marshall.Alloc
 import Foreign.C.Types
 import Control.Concurrent.MVar
+import Control.Exception (bracket)
 
 bits2bytes :: Int -> Int
 bits2bytes b = d + (if m == 0 then 0 else 1)
@@ -63,9 +64,12 @@ data Buffer = Buffer
                 (ManagedPtr Word8) -- ^ Actual chunk of memory. See below.
             | NullBuffer
 
--- TODO Monoid instance
---        a. mconcat that does a single allocation
---        b. pure (no buffers are modified)
+instance Eq Buffer where
+  NullPtr == NullPtr = True
+  (Buffer aoff alen amptr) == (Buffer boff blen bmptr) = -- TODO: implement
+  _ == _ = False
+
+-- TODO: parse string literals that contain binary escape sequences.
 
 -- | Creates a null buffer
 nullBuffer :: Buffer
@@ -74,6 +78,11 @@ nullBuffer = NullBuffer
 -- | Creates a new buffer @len@ bits long.
 newBuffer :: Int -> IO Buffer
 newBuffer len = Buffer 0 len $ mallocBytes (bits2bytes len) >>= newManagedPtr
+
+-- | Create a new buffer from a list of 'Bool's.
+fromBits :: [Bool] -> IO Buffer
+fromBits bits = ((flip (foldrM f)) bits) =<< newBuffer (length bits)
+  where f buf bit = (plusBuf buf 1) <$ setBit buf 0 bit
 
 -- | Copies a storable into a buffer.
 fromStorable :: Storable a => a -> IO Buffer
@@ -85,6 +94,7 @@ fromStorable s = do
 -- | Get the length of a buffer in bits.
 length :: Buffer -> Int
 length (Buffer offset len _) = len - offset
+length NullBuffer            = 0
 
 -- | Returns whether or not a buffer is null.
 isNull :: Buffer -> Bool
@@ -96,11 +106,38 @@ isAlive :: Buffer -> IO Bool
 isAlive NullBuffer = False
 isAlive (Buffer _ _ ptr) = isPtrAlive ptr
 
--- TODO: currently @len@ is in bytes, it should be in bits.
--- | Exactly like memcpy except for buffers.
+-- | Exactly like memcpy except for buffers & len is in bits.
 bufcpy :: Buffer -> Buffer -> Int -> IO Buffer
-bufcpy dest src len = withPtr dest (\d -> withPtr src $ \s -> memcpy d s (fromIntegral len)) >> return dest
+bufcpy destb srcb len = dest <$ withPtr destb $ \dest ->
+                                withPtr srcb $ \src -> do
+  let (Buffer destoff _ _ ) = dest
+      dnbitsBeforeByte = (bytes2bits $ bits2bytes destoff) - destoff
+      (dnbytesToCopy,dnbitsAfterByte) = (bytes2bits $ bits2bytes destoff) - dnbitsBeforeByte) `divMod` 8
+  let (Buffer srcoff _ _) = src
+      snbitsBeforeByte = (bytes2bits $ bits2bytes srcoff) - srcoff
+      (snbytesToCopy,snbitsAfterByte) = (bytes2bits $ bits2bytes srcoff) - snbitsBeforeByte) `divMod` 8
 
+  -- Copy bits before the first byte
+  when (dnbitsBeforeByte > 0) $ do
+    dbyte <- peek dest $ fst $ divMod destoff 8
+    let dbyte' = dbyte `shl` (8 - dnbitsBeforeByte)
+        dbyte'' = dbyte' `shr` (8 - snbitsBeforeByte)
+    sbyte <- peek src $ fst $ divMod srcoff 8
+    poke src (fst $ divMod srcoff 8) (sbyte .|. dbyte'')
+     
+  -- Copy bits after the last byte
+  -- TODO
+
+  memcpy (dest `plusPtr` (fst $ divMod destoff 8))  (src `plusPtr` (fst $ divMod srcoff 8)) ((fromIntegral len) - dnbitsBeforeByte - dnbitsAfterByte)
+
+
+-- | Copies @a@ at offset (from left) @aoff@ to @b@ at offset (from left) at @boff@.
+bitcpy :: Word8 -> Word8 -> Word8 -> Word8 -> Word8
+bitcpy _ b _    _    0 = b
+bitcpy a b aoff boff i = bitcpy a b' (aoff + 1) (boff + 1) (i - 1)
+  where b' = setBit b (8 - boff) $ testBit (8 - aoff) a
+
+-- TODO: Add values to NullBuffers treating them as 0.
 -- | 'plusPtr' for 'Buffer's
 -- This is the reason why pointers are as complicated as they are.
 -- Say you create a buffer, and pass the result of a plusBuf to another thread,
@@ -123,6 +160,10 @@ getBit :: Buffer -> Int -> IO Bool
 getBit buf i = witPtr buf $ \ptr ->
   (flip testBit) (8 - (mod i 8)) <$> peek (plusPtr ptr $ div (length buf) 8)
 
+hPrintBase :: Buffer -> Int -> Handle -> IO ()
+hPrintBase (Buffer off len mptr) base hdl = do
+  -- TODO: implement me
+
 --
 -- INTERNAL
 --
@@ -136,14 +177,11 @@ foreign import ccall "wrapper" mkFinalizerFunPtr :: (Ptr Word8 -> Ptr Word8 -> I
 -- | Defines a memory-managed, threadsafe pointer.
 data ManagedPtr a = MP (Ptr Word8) (ForeignPtr a) (MVar Bool)
 
-withManagedPtr :: ManagedPointer a -> (Ptr a -> IO b) -> IO b
-withManagedPtr m@(MP rc fptr lock) f = do
-  retainPtr m
-  lock' <- takeMVar lock
-  v <- withForeignPtr fptr f
-  putMVar lock'
-  releasePtr m
-  return v
+withManagedPtr :: ManagedPtr a -> (Ptr a -> IO b) -> IO b
+withManagedPtr m@(MP rc fptr lock) f = bracket aq rel (withForeignPtr fptr f)
+  where
+    aq = takeMVar lock <* retainPtr m
+    rel lock' = putMVar lock' <* releasePtr m
 
 newManagedPtr :: Ptr a -> IO (ManagedPtr a)
 newManagedPtr p = MP <$> mkfptr p <*> callocBytes 1 <*> newMVar True
