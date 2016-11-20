@@ -115,25 +115,31 @@ bufcpy :: Buffer -> Buffer -> Int -> IO Buffer
 bufcpy destb@(Buffer doff _ _) srcb@(Buffer soff _ _) len =
   destb <$ withPtr destb $ \dest ->
            withPtr srcb $ \src -> do
-  let dnbitsBeforeByte = (bytes2bits $ bits2bytes doff) - doff
-      (dnbytesToCopy,dnbitsAfterByte) = (bytes2bits $ bits2bytes destoff) - dnbitsBeforeByte) `divMod` 8
-  let snbitsBeforeByte = (bytes2bits $ bits2bytes soff) - soff
-      (snbytesToCopy,snbitsAfterByte) = (bytes2bits $ bits2bytes soff) - snbitsBeforeByte) `divMod` 8
-
   -- Copy bits before the first byte
   when (dnbitsBeforeByte > 0) $ do
     sbyte <- peek src $ fst $ divMod soff 8
     dbyte <- peek dest $ fst $ divMod doff 8
     let dbyte' = shl dbyte (snbitsBeforeByte - dnbitsBeforeByte)
-    poke src (fst $ divMod soff 8) (sbyte .|. dbyte')
+    poke dest (fst $ divMod doff 8) (sbyte .|. dbyte')
      
-  -- Copy buts after the last byte
-  when (dnbitsAfterByte ? 0) $ do
+  -- Copy bits after the last byte
+  when (dnbitsAfterByte > 0) $ do
     sbyte <- peek src $ bits2bytes (soff + len)
+    dbyte <- peek dest $ bits2bytes (doff + len)
+    let dbyte' = ...
+    poke dest (
     -- TODO: finish this. similar to previous section    
 
-  memcpy (dest `plusPtr` (fst $ divMod destoff 8))  (src `plusPtr` (fst $ divMod srcoff 8)) ((fromIntegral len) - dnbitsBeforeByte - dnbitsAfterByte)
+  memcpy (dest `plusPtr` dfirstByteIdx)  (src `plusPtr` sfirstByteIdx) numWholeBytesToCopy
+  where
+    dnbitsBeforeByte = 8 - (mod doff 8) -- (DESTINATION) Number of bits before an even byte boundary (offset 15 -> dnbitsBeforeByte = 1)
+    snbitsBeforeByte = 8 - (mod soff 8) -- (SOURCE)
+    dnbitsAfterByte = 8 - (mod (doff + len) 8) -- (DESTINATION) number of bits after the last remaining byte
+    snbitsAfterByte = 8 - (mod (soff + len) 8) -- (SOURCE)
 
+    dfirstByteIdx = div (doff + dnbitsBeforeByte) 8
+    sfirstByteIdx = div (soff + snbitsBeforeByte) 8
+    numWholeBytesToCopy = (len - dnbitsBeforeByte - dnbitsAfterByte) div 8
 
 -- | Copies @a@ at offset (from left) @aoff@ to @b@ at offset (from left) at @boff@.
 bitcpy :: Word8 -> Word8 -> Word8 -> Word8 -> Word8
