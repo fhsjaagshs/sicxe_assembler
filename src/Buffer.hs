@@ -14,6 +14,10 @@ the available memory of SIG/XE machines when storing lengths and indeces.
 Designed to have as little overhead as possible. Also, I cannot use bytestring
 in the spirit of academic integrity.
 
+This module is dedicated to Fritz Wiedmer, my grandfather (~1925 to 2016). During
+his time at IBM, he designed Bubbles memory and ECC for keyboards. Fritz is the reason
+I became fascinated with computer science.
+
 -}
 
 {-# LANGUAGE ForeignFunctionInterface #-}
@@ -108,25 +112,25 @@ isAlive (Buffer _ _ ptr) = isPtrAlive ptr
 
 -- | Exactly like memcpy except for buffers & len is in bits.
 bufcpy :: Buffer -> Buffer -> Int -> IO Buffer
-bufcpy destb srcb len = dest <$ withPtr destb $ \dest ->
-                                withPtr srcb $ \src -> do
-  let (Buffer destoff _ _ ) = dest
-      dnbitsBeforeByte = (bytes2bits $ bits2bytes destoff) - destoff
+bufcpy destb@(Buffer doff _ _) srcb@(Buffer soff _ _) len =
+  destb <$ withPtr destb $ \dest ->
+           withPtr srcb $ \src -> do
+  let dnbitsBeforeByte = (bytes2bits $ bits2bytes doff) - doff
       (dnbytesToCopy,dnbitsAfterByte) = (bytes2bits $ bits2bytes destoff) - dnbitsBeforeByte) `divMod` 8
-  let (Buffer srcoff _ _) = src
-      snbitsBeforeByte = (bytes2bits $ bits2bytes srcoff) - srcoff
-      (snbytesToCopy,snbitsAfterByte) = (bytes2bits $ bits2bytes srcoff) - snbitsBeforeByte) `divMod` 8
+  let snbitsBeforeByte = (bytes2bits $ bits2bytes soff) - soff
+      (snbytesToCopy,snbitsAfterByte) = (bytes2bits $ bits2bytes soff) - snbitsBeforeByte) `divMod` 8
 
   -- Copy bits before the first byte
   when (dnbitsBeforeByte > 0) $ do
-    dbyte <- peek dest $ fst $ divMod destoff 8
-    let dbyte' = dbyte `shl` (8 - dnbitsBeforeByte)
-        dbyte'' = dbyte' `shr` (8 - snbitsBeforeByte)
-    sbyte <- peek src $ fst $ divMod srcoff 8
-    poke src (fst $ divMod srcoff 8) (sbyte .|. dbyte'')
+    sbyte <- peek src $ fst $ divMod soff 8
+    dbyte <- peek dest $ fst $ divMod doff 8
+    let dbyte' = shl dbyte (snbitsBeforeByte - dnbitsBeforeByte)
+    poke src (fst $ divMod soff 8) (sbyte .|. dbyte')
      
-  -- Copy bits after the last byte
-  -- TODO
+  -- Copy buts after the last byte
+  when (dnbitsAfterByte ? 0) $ do
+    sbyte <- peek src $ bits2bytes (soff + len)
+    -- TODO: finish this. similar to previous section    
 
   memcpy (dest `plusPtr` (fst $ divMod destoff 8))  (src `plusPtr` (fst $ divMod srcoff 8)) ((fromIntegral len) - dnbitsBeforeByte - dnbitsAfterByte)
 
