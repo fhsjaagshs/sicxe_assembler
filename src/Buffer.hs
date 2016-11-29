@@ -18,9 +18,10 @@ This module is dedicated to Fritz Wiedmer, my grandfather (~1925 to 2016). Durin
 his time at IBM, he designed Bubbles memory and ECC for keyboards. Fritz is the reason
 I became fascinated with computer science.
 
+ENDIANNESS-independent
 -}
 
-{-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE ForeignFunctionInterface, ScopedTypeVariables #-}
 
 module Buffer
 (
@@ -41,16 +42,25 @@ module Buffer
 )
 where
 
+-- IS SIC/XE big or litle endian?
+-- Should this data structure take this into account?
+
 import GHC.Prim
-import Data.Bits
+import Data.Bits hiding (setBit,clearBit)
+import qualified Data.Bits as Bits (setBit,clearBit)
 import Data.Word
+import Control.Monad
 import Foreign.Storable
 import Foreign.Ptr
 import Foreign.ForeignPtr
-import Foreign.Marshall.Alloc
+import Foreign.ForeignPtr.Unsafe
+import Foreign.Marshal.Alloc
 import Foreign.C.Types
 import Control.Concurrent.MVar
 import Control.Exception (bracket)
+import qualified Prelude as P (length)
+import Prelude hiding (length)
+import System.IO.Unsafe
 
 bits2bytes :: Int -> Int
 bits2bytes b = d + (if m == 0 then 0 else 1)
@@ -69,9 +79,15 @@ data Buffer = Buffer
             | NullBuffer
 
 instance Eq Buffer where
-  NullPtr == NullPtr = True
-  (Buffer aoff alen amptr) == (Buffer boff blen bmptr) = -- TODO: implement
+  NullBuffer == NullBuffer = True
+  (Buffer aoff alen amptr) == (Buffer boff blen bmptr) = (aptr == bptr) && alen' == blen'
+    where aptr = (unsafeManagedPtrToPtr amptr) `plusPtr` aoff
+          alen' = alen - aoff
+          bptr = (unsafeManagedPtrToPtr bmptr) `plusPtr` boff
+          blen' = blen - boff
   _ == _ = False
+
+-- TODO: Show instance that prints hexadecimal
 
 -- TODO: parse string literals that contain binary escape sequences.
 
@@ -81,19 +97,16 @@ nullBuffer = NullBuffer
 
 -- | Creates a new buffer @len@ bits long.
 newBuffer :: Int -> IO Buffer
-newBuffer len = Buffer 0 len $ mallocBytes (bits2bytes len) >>= newManagedPtr
+newBuffer len = Buffer 0 len <$> (mallocBytes (bits2bytes len) >>= newManagedPtr)
+
+-- | Frees a buffer
+freeBuffer :: Buffer -> IO ()
+freeBuffer b@(Buffer ptr rc) = 
 
 -- | Create a new buffer from a list of 'Bool's.
 fromBits :: [Bool] -> IO Buffer
-fromBits bits = ((flip (foldrM f)) bits) =<< newBuffer (length bits)
+fromBits bits = ((flip (foldM f)) bits) =<< newBuffer (P.length bits)
   where f buf bit = (plusBuf buf 1) <$ setBit buf 0 bit
-
--- | Copies a storable into a buffer.
-fromStorable :: Storable a => a -> IO Buffer
-fromStorable s = do
-  b <- newBuffer $ bytes2bits $ sizeOf s
-  withPtr b $ \ptr -> poke ptr s
-  return b
 
 -- | Get the length of a buffer in bits.
 length :: Buffer -> Int
@@ -107,45 +120,43 @@ isNull _          = False
 
 -- | Returns whether of not a buffer is alive.
 isAlive :: Buffer -> IO Bool
-isAlive NullBuffer = False
+isAlive NullBuffer = return False
 isAlive (Buffer _ _ ptr) = isPtrAlive ptr
 
 -- | Exactly like memcpy except for buffers & len is in bits.
 bufcpy :: Buffer -> Buffer -> Int -> IO Buffer
-bufcpy destb@(Buffer doff _ _) srcb@(Buffer soff _ _) len =
-  destb <$ withPtr destb $ \dest ->
-           withPtr srcb $ \src -> do
-  -- Copy bits before the first byte
-  when (dnbitsBeforeByte > 0) $ do
-    sbyte <- peek src $ fst $ divMod soff 8
-    dbyte <- peek dest $ fst $ divMod doff 8
-    let dbyte' = shl dbyte (snbitsBeforeByte - dnbitsBeforeByte)
-    poke dest (fst $ divMod doff 8) (sbyte .|. dbyte')
+bufcpy destb@(Buffer doff _ _) srcb@(Buffer soff _ _) len = destb <$ (withPtr destb (\d -> (withPtr srcb (\s -> f s d))))
+  where f src dest = do
+          -- Copy bits before the first byte
+          when (dnbitsBeforeByte > 0) $ do
+            (sbyte :: Word8) <- peek $ src `plusPtr` div soff 8
+            (dbyte :: Word8) <- peek $ dest `plusPtr`  div doff 8
+            let dbyte' = shift dbyte (snbitsBeforeByte - dnbitsBeforeByte)
+            poke (dest `plusPtr` div doff 8) (sbyte .|. dbyte')
      
-  -- Copy bits after the last byte
-  when (dnbitsAfterByte > 0) $ do
-    sbyte <- peek src $ bits2bytes (soff + len)
-    dbyte <- peek dest $ bits2bytes (doff + len)
-    let dbyte' = ...
-    poke dest (
-    -- TODO: finish this. similar to previous section    
+          -- Copy bits after the last byte
+          when (dnbitsAfterByte > 0) $ do
+            (sbyte :: Word8) <- peek $ src `plusPtr` (bits2bytes $ soff + len)
+            (dbyte :: Word8) <- peek $ dest `plusPtr` (bits2bytes $ doff + len)
+            poke (dest `plusPtr` (div (doff + len) 8)) (sbyte .|. dbyte)
 
-  memcpy (dest `plusPtr` dfirstByteIdx)  (src `plusPtr` sfirstByteIdx) numWholeBytesToCopy
-  where
-    dnbitsBeforeByte = 8 - (mod doff 8) -- (DESTINATION) Number of bits before an even byte boundary (offset 15 -> dnbitsBeforeByte = 1)
-    snbitsBeforeByte = 8 - (mod soff 8) -- (SOURCE)
-    dnbitsAfterByte = 8 - (mod (doff + len) 8) -- (DESTINATION) number of bits after the last remaining byte
-    snbitsAfterByte = 8 - (mod (soff + len) 8) -- (SOURCE)
+          -- Copy the bytes in the middle
+          memcpy (dest `plusPtr` dfirstByteIdx)  (src `plusPtr` sfirstByteIdx) cnumWholeBytesToCopy
+        dnbitsBeforeByte = 8 - (mod doff 8) -- (DESTINATION) Number of bits before an even byte boundary (offset 15 -> dnbitsBeforeByte = 1)
+        snbitsBeforeByte = 8 - (mod soff 8) -- (SOURCE)
+        dnbitsAfterByte = 8 - (mod (doff + len) 8) -- (DESTINATION) number of bits after the last remaining byte
+        snbitsAfterByte = 8 - (mod (soff + len) 8) -- (SOURCE)
 
-    dfirstByteIdx = div (doff + dnbitsBeforeByte) 8
-    sfirstByteIdx = div (soff + snbitsBeforeByte) 8
-    numWholeBytesToCopy = (len - dnbitsBeforeByte - dnbitsAfterByte) div 8
+        dfirstByteIdx = div (doff + dnbitsBeforeByte) 8
+        sfirstByteIdx = div (soff + snbitsBeforeByte) 8
+        numWholeBytesToCopy = div (len - dnbitsBeforeByte - dnbitsAfterByte) 8
+        cnumWholeBytesToCopy = CSize $ fromIntegral numWholeBytesToCopy
 
 -- | Copies @a@ at offset (from left) @aoff@ to @b@ at offset (from left) at @boff@.
-bitcpy :: Word8 -> Word8 -> Word8 -> Word8 -> Word8
-bitcpy _ b _    _    0 = b
-bitcpy a b aoff boff i = bitcpy a b' (aoff + 1) (boff + 1) (i - 1)
-  where b' = setBit b (8 - boff) $ testBit (8 - aoff) a
+-- bitcpy :: Word8 -> Word8 -> Word8 -> Word8 -> Word8
+-- bitcpy _ b _    _    0 = b
+-- bitcpy a b aoff boff i = bitcpy a b' (aoff + 1) (boff + 1) (i - 1)
+--   where b' = setBit b (8 - boff) $ testBit (8 - aoff) a
 
 -- TODO: Add values to NullBuffers treating them as 0.
 -- | 'plusPtr' for 'Buffer's
@@ -154,80 +165,70 @@ bitcpy a b aoff boff i = bitcpy a b' (aoff + 1) (boff + 1) (i - 1)
 -- then exit. Now, your original buffer would deallocate the memory the plusBuf version requires.
 plusBuf :: Buffer -> Int -> Buffer
 plusBuf NullBuffer _ = NullBuffer
-plusBuf (Buffer o l ptr) i = Buffer (o + i) l (retainPtr ptr)
+plusBuf (Buffer o l ptr) i = Buffer (o + i) l (unsafePerformIO $ retainPtr ptr)
 
 -- | Sets bit @i@ to @on@.
 setBit :: Buffer -> Int -> Bool -> IO ()
-setBit buf i on = withPtr buf $ xform $ scBit on
+setBit buf i = (<$) () . withPtr buf . xform . scBit
   where
     xform f p = peek p >>= poke p . f
     f p = p `plusPtr` (div i 8)
-    scBit True v = setBit v (8 - (mod i 8))
-    scBit False v = clearBit v (8 - (mod i 8))
+    scBit True v = Bits.setBit v (8 - (mod i 8))
+    scBit False v = Bits.clearBit v (8 - (mod i 8))
    
 -- | Gets bit @i@.
-getBit :: Buffer -> Int -> IO Bool
-getBit buf i = witPtr buf $ \ptr ->
-  (flip testBit) (8 - (mod i 8)) <$> peek (plusPtr ptr $ div (length buf) 8)
+getBit :: Buffer -> Int -> IO (Maybe Bool)
+getBit buf i = withPtr buf $ \ptr -> do
+  (byte :: Word8) <- peek $ ptr `plusPtr` (length buf `div` 8)
+  return $ testBit byte (8 - (mod i 8))
 
-hPrintBase :: Buffer -> Int -> Handle -> IO ()
-hPrintBase (Buffer off len mptr) base hdl = do
-  -- TODO: implement me
+withPtr :: Buffer -> (Ptr Word8 -> IO a) -> IO (Maybe a)
+withPtr NullBuffer _ = error "null buffer dereference error"
+withPtr (Buffer _ _ ptr) f = withManagedPtr ptr f
 
 --
 -- INTERNAL
---
+--     
 
-withPtr :: Buffer -> (Ptr Word8 -> IO a) -> IO a
-withPtr NullBuffer = error "null buffer"
-withPtr (Buffer _ _ ptr) f = withManagedPtr ptr f
-      
 foreign import ccall "wrapper" mkFinalizerFunPtr :: (Ptr Word8 -> Ptr Word8 -> IO ()) -> IO (FunPtr (Ptr Word8 -> Ptr Word8 -> IO ()))
 
--- | Defines a memory-managed, threadsafe pointer.
-data ManagedPtr a = MP (Ptr Word8) (ForeignPtr a) (MVar Bool)
+-- TODO: check: MVars synchronize values across copies
 
-withManagedPtr :: ManagedPtr a -> (Ptr a -> IO b) -> IO b
-withManagedPtr m@(MP rc fptr lock) f = bracket aq rel (withForeignPtr fptr f)
+-- | Defines a memory-managed, threadsafe pointer.
+data ManagedPtr a = MP (Ptr a) (MVar Word8)
+
+unsafeManagedPtrToPtr :: ManagedPtr a -> Ptr a
+unsafeManagedPtrToPtr (MP p _) = p
+
+-- | Access the contents of a managed ptr.
+withManagedPtr :: ManagedPtr a -> (Ptr a -> IO b) -> IO (Maybe b)
+withManagedPtr m@(MP ptr rc) f = bracket aq rel g
   where
-    aq = takeMVar lock <* retainPtr m
-    rel lock' = putMVar lock' <* releasePtr m
+    aq = takeMVar rc <* retainPtr m
+    rel rc' = putMVar rc rc' <* releasePtr m
+    g 0 = return Nothing
+    g _ = Just <$> f ptr
 
 newManagedPtr :: Ptr a -> IO (ManagedPtr a)
-newManagedPtr p = MP <$> mkfptr p <*> callocBytes 1 <*> newMVar True
-  where
-    mkfptr = newForeignPtrEnv (mkFinalizerFunPtr foreignPtrFinalizer)
+newManagedPtr p = MP p <$> newMVar 1
 
 retainPtr :: ManagedPtr a -> IO (ManagedPtr a)
-retainPtr m@(MP rc fptr lock) = do
-  touchForeignPtr fptr
-  peek rc >>= poke rc . (+) 1
+retainPtr m@(MP ptr rc) = do
+  v <- takeMVar rc
+  when (v /= 0) $ putMVar rc (v + 1)
   return m
 
 releasePtr :: ManagedPtr a -> IO (ManagedPtr a)
-releasePtr m@(MP rc fptr lock) = do
-  _ <- takeMVar lock
-  touchForeignPtr fptr
-  putMVar =<< decrement rc
+releasePtr m@(MP ptr rc) = do
+  v <- takeMVar rc
+  if (v > 0)
+    then putMVar rc (v - 1)
+    else free ptr >> putMVar rc 0
   return m
 
 isPtrAlive :: ManagedPtr a -> IO Bool
-isPtrAlive (MP _ _ lock) = do
-  v <- takeMVar lock
-  putMVar lock v
-  return v 
-
-foreignPtrFinalizer :: Ptr Word8 -> Ptr Word8 -> IO ()
-foreignPtrFinalizer rc ptr = do
-  alive <- decrement rc
-  when (not alive) $ do
-    free rc
-    free ptr
-
--- | Decrements the word at @ptr@, returning if it's still > 0.
-decrement :: Ptr Word8 -> IO Bool
-decrement ptr = do 
-  v <- peek ptr
-  when (v > 0) poke ptr (v - 1)
-  return $ v > 0
+isPtrAlive (MP _ rc) = do
+  v <- takeMVar rc
+  putMVar rc v
+  return (v > 0)
 
