@@ -7,7 +7,7 @@ Maintainer  : nate@symer.io
 Stability   : stable
 Portability : POSIX
 
-A @Buffer@ is a C pointer with a length, offset, and mutex associated with it.
+A @Buffer@ is a managed C pointer with a size andoffset associated with it
 
 This is essentially a lighter-weight Haskell ByteString. It takes into account
 the available memory of SIG/XE machines when storing lengths and indeces.
@@ -18,7 +18,6 @@ This module is dedicated to Fritz Wiedmer, my grandfather (~1925 to 2016). Durin
 his time at IBM, he designed Bubbles memory and ECC for keyboards. Fritz is the reason
 I became fascinated with computer science.
 
-ENDIANNESS-independent
 -}
 
 {-# LANGUAGE ForeignFunctionInterface, ScopedTypeVariables #-}
@@ -30,8 +29,7 @@ module Buffer
   Buffer,
   nullBuffer,
   newBuffer,
-  destroyBuffer,
-  fromStorable,
+  freeBuffer,
   length,
   isNull,
   isAlive,
@@ -52,15 +50,18 @@ import Data.Word
 import Control.Monad
 import Foreign.Storable
 import Foreign.Ptr
-import Foreign.ForeignPtr
-import Foreign.ForeignPtr.Unsafe
-import Foreign.Marshal.Alloc
+-- import Foreign.ForeignPtr
+-- import Foreign.ForeignPtr.Unsafe
+-- import Foreign.Marshal.Alloc
 import Foreign.C.Types
 import Control.Concurrent.MVar
 import Control.Exception (bracket)
 import qualified Prelude as P (length)
 import Prelude hiding (length)
 import System.IO.Unsafe
+import Data.Maybe
+import Data.Monoid
+import Data.Char
 
 bits2bytes :: Int -> Int
 bits2bytes b = d + (if m == 0 then 0 else 1)
@@ -70,6 +71,8 @@ bytes2bits :: Int -> Int
 bytes2bits = (*) 8
 
 foreign import ccall unsafe "string.h" memcpy :: Ptr a -> Ptr a -> CSize -> IO (Ptr a)
+foreign import ccall unsafe "stdlib.h" malloc :: CSize -> IO (Ptr a)
+foreign import ccall unsafe "stdlib.h" free   :: Ptr a -> IO ()
 
 -- | Buffer type.
 data Buffer = Buffer
@@ -87,9 +90,36 @@ instance Eq Buffer where
           blen' = blen - boff
   _ == _ = False
 
+instance Show Buffer where
+  show = unsafePerformIO . showBufferHex
+
 -- TODO: Show instance that prints hexadecimal
 
 -- TODO: parse string literals that contain binary escape sequences.
+
+showBufferHex :: Buffer -> IO String
+showBufferHex = f ""
+  where
+    f :: String -> Buffer -> IO String
+    f acc NullBuffer = return acc
+    f acc buf
+      | length buf == 0 = return acc
+      | otherwise = do
+        putStrLn "HERE"
+        nybble <- packNybbleBE
+                    <$> (fromJust <$> getBit buf 0)
+                    <*> (fromJust <$> getBit buf 1)
+                    <*> (fromJust <$> getBit buf 2)
+                    <*> (fromJust <$> getBit buf 3)
+        f (acc <> [toHex $ fromIntegral nybble]) (buf `plusBuf` 4)
+    toHex v
+      | v < 10 = chr $ v + 48 -- numeric hex
+      | otherwise = chr $ v + 65 -- alpha hex
+    packNybbleBE :: Bool -> Bool -> Bool -> Bool -> Word8
+    packNybbleBE a b c d = (toBit 0 a) .|. (toBit 1 b) .|. (toBit 2 c) .|. (toBit 3 d) 
+      where
+        toBit pos True = bit pos
+        toBit _   False = 0
 
 -- | Creates a null buffer
 nullBuffer :: Buffer
@@ -97,15 +127,20 @@ nullBuffer = NullBuffer
 
 -- | Creates a new buffer @len@ bits long.
 newBuffer :: Int -> IO Buffer
-newBuffer len = Buffer 0 len <$> (mallocBytes (bits2bytes len) >>= newManagedPtr)
+newBuffer len = do
+  ptr <- malloc $ CSize $ fromIntegral $ bits2bytes len
+  mptr <- newManagedPtr ptr
+  return $ Buffer 0 len mptr
 
 -- | Frees a buffer
 freeBuffer :: Buffer -> IO ()
-freeBuffer b@(Buffer ptr rc) = 
+freeBuffer b@(Buffer _ _ ptr) = releasePtr ptr >> return ()
 
 -- | Create a new buffer from a list of 'Bool's.
 fromBits :: [Bool] -> IO Buffer
-fromBits bits = ((flip (foldM f)) bits) =<< newBuffer (P.length bits)
+fromBits bits = do
+   buf <- newBuffer (P.length bits)
+   foldM f buf bits
   where f buf bit = (plusBuf buf 1) <$ setBit buf 0 bit
 
 -- | Get the length of a buffer in bits.
@@ -152,12 +187,6 @@ bufcpy destb@(Buffer doff _ _) srcb@(Buffer soff _ _) len = destb <$ (withPtr de
         numWholeBytesToCopy = div (len - dnbitsBeforeByte - dnbitsAfterByte) 8
         cnumWholeBytesToCopy = CSize $ fromIntegral numWholeBytesToCopy
 
--- | Copies @a@ at offset (from left) @aoff@ to @b@ at offset (from left) at @boff@.
--- bitcpy :: Word8 -> Word8 -> Word8 -> Word8 -> Word8
--- bitcpy _ b _    _    0 = b
--- bitcpy a b aoff boff i = bitcpy a b' (aoff + 1) (boff + 1) (i - 1)
---   where b' = setBit b (8 - boff) $ testBit (8 - aoff) a
-
 -- TODO: Add values to NullBuffers treating them as 0.
 -- | 'plusPtr' for 'Buffer's
 -- This is the reason why pointers are as complicated as they are.
@@ -165,18 +194,17 @@ bufcpy destb@(Buffer doff _ _) srcb@(Buffer soff _ _) len = destb <$ (withPtr de
 -- then exit. Now, your original buffer would deallocate the memory the plusBuf version requires.
 plusBuf :: Buffer -> Int -> Buffer
 plusBuf NullBuffer _ = NullBuffer
-plusBuf (Buffer o l ptr) i = Buffer (o + i) l (unsafePerformIO $ retainPtr ptr)
+plusBuf (Buffer o l ptr) i = Buffer (o + i) l ptr
 
 -- | Sets bit @i@ to @on@.
 setBit :: Buffer -> Int -> Bool -> IO ()
-setBit buf i = (<$) () . withPtr buf . xform . scBit
-  where
-    xform f p = peek p >>= poke p . f
-    f p = p `plusPtr` (div i 8)
-    scBit True v = Bits.setBit v (8 - (mod i 8))
-    scBit False v = Bits.clearBit v (8 - (mod i 8))
+setBit buf i on = () <$ (withPtr buf $ \ptr -> do
+  (b :: Word8) <- peek ptr'
+  poke ptr' $ (bit (8 - m)) .|. b)
+  where (d,m) = divMod i 8
+        ptr' = ptr `plusPtr` d
    
--- | Gets bit @i@.
+-- | Gets bit @i@, treating the entire buffer as a big-endian bit set (left to right)
 getBit :: Buffer -> Int -> IO (Maybe Bool)
 getBit buf i = withPtr buf $ \ptr -> do
   (byte :: Word8) <- peek $ ptr `plusPtr` (length buf `div` 8)
@@ -202,12 +230,16 @@ unsafeManagedPtrToPtr (MP p _) = p
 
 -- | Access the contents of a managed ptr.
 withManagedPtr :: ManagedPtr a -> (Ptr a -> IO b) -> IO (Maybe b)
-withManagedPtr m@(MP ptr rc) f = bracket aq rel g
-  where
-    aq = takeMVar rc <* retainPtr m
-    rel rc' = putMVar rc rc' <* releasePtr m
-    g 0 = return Nothing
-    g _ = Just <$> f ptr
+withManagedPtr (MP ptr rc) f = do
+  rc' <- takeMVar rc
+  if rc' == 0
+    then do
+      putMVar rc rc'
+      return Nothing
+    else do
+      v <- f ptr
+      putMVar rc rc'
+      return $ Just v
 
 newManagedPtr :: Ptr a -> IO (ManagedPtr a)
 newManagedPtr p = MP p <$> newMVar 1
