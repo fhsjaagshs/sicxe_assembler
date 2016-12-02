@@ -24,8 +24,6 @@ I became fascinated with computer science.
 
 module Buffer
 (
-  bits2bytes,
-  bytes2bits,
   Buffer,
   newBuffer,
   freeBuffer,
@@ -65,9 +63,6 @@ bits2bytes :: Int -> Int
 bits2bytes b = d + (if m == 0 then 0 else 1)
   where (d,m) = divMod b 8
 
-bytes2bits :: Int -> Int
-bytes2bits = (*) 8
-
 foreign import ccall unsafe "string.h" memcpy :: Ptr a -> Ptr a -> CSize -> IO (Ptr a)
 foreign import ccall unsafe "stdlib.h" malloc :: CSize -> IO (Ptr a)
 foreign import ccall unsafe "stdlib.h" free   :: Ptr a -> IO ()
@@ -103,14 +98,18 @@ showBufferHex = f ""
                     <*> (fromMaybe False <$> getBit buf 1)
                     <*> (fromMaybe False <$> getBit buf 2)
                     <*> (fromMaybe False <$> getBit buf 3)
-        f ((toHex $ fromIntegral nybble):acc) (buf `plusBuf` 4)
+        f (acc <> [(toHex $ fromIntegral nybble)]) (buf `plusBuf` 4)
     toHex v
       | v < 10 = chr $ v + 48 -- numeric hex
       | otherwise = chr $ (v - 10) + 65 -- alpha hex
 
 {-# INLINE packNybble #-}
 packNybble :: Bool -> Bool -> Bool -> Bool -> Word8
-packNybble  a b c d = z a 1 .|. z b 2 .|. z c 4 .|. z d 8
+packNybble a b c d = packByte a b c d False False False False
+
+{-# INLINE packByte #-}
+packByte :: Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Word8
+packByte  a b c d e f g h = z a 1 .|. z b 2 .|. z c 4 .|. z d 8 .|. z e 16 .|. z f 32 .|. z g 64 .|. z h 128
   where z False _ = 0
         z True  n = n
 
@@ -127,12 +126,12 @@ freeBuffer b@(Buffer _ _ ptr) = releasePtr ptr >> return ()
 -- | Create a new buffer from a list of 'Bool's.
 -- (if bits = x:xs, xs contains bits more significant than x).
 fromBits :: [Bool] -> IO Buffer
-fromBits bits = g bits =<< newBuffer (P.length bits)
+fromBits bits = g 0 bits =<< newBuffer (P.length bits)
   where
-    g [] buf = return buf
-    g (x:xs) buf = do
-      setBit buf (P.length bits - (P.length xs) - 1) x
-      g xs buf
+    g _ [] buf = return buf
+    g i (x:xs) buf = do
+      setBit buf i x
+      g (i + 1) xs buf
 
 fromStorable :: Storable a => a -> IO Buffer
 fromStorable s = do
@@ -157,11 +156,11 @@ bufcpy :: Buffer -> Buffer -> Int -> IO Buffer
 bufcpy db sb len = (withPtr db (\d -> (withPtr sb (\s -> f s d)))) >> return db
   where f src dest
           | destNLeadingBits /= srcNLeadingBits = do -- Copy up to 7 leading bits 
-            orcpy (dec srcFirstByte) (dec destFirstByte) (flip shift nLeadingBits) -- Copy up to 7 leading bits
-            f (src `plusPtr` nLeadingBits) (dest `plusPtr` nLeadingBits)           -- and try again
+            orcpy (dec srcFirstByte) (dec destFirstByte) id (flip shift nLeadingBits) -- Copy up to 7 leading bits
+            f (src `plusPtr` nLeadingBits) (dest `plusPtr` nLeadingBits)              -- and try again
           | otherwise = do
-            memcpy destFirstByte srcFirstByte $ CSize $ fromIntegral cpyLenBytes   -- Copy as many full bytes as possible from the middle
-            when (mod len 8 /= 0) $ orcpy destBytesEnd srcBytesEnd id              -- Copy up to 7 trailing bits
+            memcpy destFirstByte srcFirstByte $ CSize $ fromIntegral cpyLenBytes      -- Copy as many full bytes as possible from the middle
+            when (mod len 8 /= 0) $ orcpy destBytesEnd srcBytesEnd id id              -- Copy up to 7 trailing bits
           where
             srcFirstByte = src `plusPtr` bits2bytes soff
             destFirstByte = dest `plusPtr` bits2bytes doff
@@ -177,10 +176,10 @@ bufcpy db sb len = (withPtr db (\d -> (withPtr sb (\s -> f s d)))) >> return db
 
         off (Buffer o _ _) = o
         dec p = p `plusPtr` (-1)
-        orcpy dptr sptr f = do
+        orcpy dptr sptr sf df = do
           (sbyte :: Word8) <- peek sptr
           (dbyte :: Word8) <- peek dptr
-          poke dptr (sbyte .|. f dbyte)
+          poke dptr (sf sbyte .|. df dbyte)
 
 -- | 'plusPtr' for 'Buffer's.
 plusBuf :: Buffer -> Int -> Buffer
@@ -194,7 +193,6 @@ setBit buf@(Buffer off _ _) i on = void $ withPtr buf f
         maskf = (flip (bool Bits.clearBit Bits.setBit on)) m
         f ptr = do
           (b :: Word8) <- peek ptr'
-          -- poke ptr' $ mask .|. b
           poke ptr' $ maskf b
           where ptr' = ptr `plusPtr` d
    
@@ -205,8 +203,23 @@ getBit buf@(Buffer off _ _) i = withPtr buf $ \ptr -> do
   return $ testBit byte m
   where (d, m) = divMod (off + i) 8
 
+getByte :: Buffer -> Int -> IO (Maybe Word8)
+getByte buf@(Buffer off _ _) i
+  | i > bits2bytes (length buf) = return Nothing
+  | i < 0 = return Nothing
+  | otherwise = withPtr buf f
+  where
+    f ptr
+      | m == 0 = peek firstByte
+      | otherwise = do
+        (a :: Word8) <- peek firstByte
+        (b :: Word8) <- peek $ firstByte `plusPtr` 1
+        return $ shiftR a m .|. shiftL b (8 - m)
+      where (d, m) = divMod off 8
+            firstByte = ptr `plusPtr` d
+
 withPtr :: Buffer -> (Ptr Word8 -> IO a) -> IO (Maybe a)
-withPtr (Buffer _ _ ptr) f = withManagedPtr ptr f
+withPtr (Buffer _ _ ptr) = withManagedPtr ptr
 
 --
 -- INTERNAL
