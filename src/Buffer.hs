@@ -140,41 +140,41 @@ length (Buffer offset len _) = len - offset
 isAlive :: Buffer -> IO Bool
 isAlive (Buffer _ _ ptr) = isPtrAlive ptr
 
--- TODO: ensure this one works
--- | Exactly like memcpy except for buffers & len is in bits.
+-- | Like Data.Bits.shift, but works on buffers
+bufshift :: Buffer -> Int -> IO Buffer
+bufshift b dist = return b -- TODO: implement
+
+-- | Memcpy in bits with buffers.
 bufcpy :: Buffer -> Buffer -> Int -> IO Buffer
-bufcpy destb@(Buffer doff _ _) srcb@(Buffer soff _ _) len = destb <$ (withPtr destb (\d -> (withPtr srcb (\s -> f s d))))
-  where f src dest = do
-          -- Copy bits before the first byte
-          when (dnbitsBeforeByte > 0) $ do
-            (sbyte :: Word8) <- peek $ src `plusPtr` div soff 8
-            (dbyte :: Word8) <- peek $ dest `plusPtr`  div doff 8
-            let dbyte' = shift dbyte (snbitsBeforeByte - dnbitsBeforeByte)
-            poke (dest `plusPtr` div doff 8) (sbyte .|. dbyte')
-     
-          -- Copy bits after the last byte
-          when (dnbitsAfterByte > 0) $ do
-            (sbyte :: Word8) <- peek $ src `plusPtr` (bits2bytes $ soff + len)
-            (dbyte :: Word8) <- peek $ dest `plusPtr` (bits2bytes $ doff + len)
-            poke (dest `plusPtr` (div (doff + len) 8)) (sbyte .|. dbyte)
+bufcpy db sb len = (withPtr db (\d -> (withPtr sb (\s -> f s d)))) >> return destb
+  where f src dest
+          | destNLeadingBits /= srcNLeadingBits = do -- Copy up to 7 leading bits 
+            orcpy (dec srcFirstByte) (dec destFirstByte) (flip shift nLeadingBits) -- Copy up to 7 leading bits
+            f (src `plusPtr` nLeadingBits) (dest `plusPtr` nLeadingBits)           -- and try again
+          | otherwise = do
+            memcpy destFirstByte srcFirstByte $ CSize $ fromIntegral cpyLenBytes   -- Copy as many full bytes as possible from the middle
+            when (mod len 8 /= 0) $ orcpy destBytesEnd srcBytesEnd id              -- Copy up to 7 trailing bits
+          where
+            srcFirstByte = src `plusPtr` bits2bytes soff
+            destFirstByte = dest `plusPtr` bits2bytes doff
+            srcBytesEnd = srcFirstByte `plusPtr` cpyLenBytes
+            destBytesEnd = destFirstByte `plusPtr` cpyLenBytes
 
-          -- Copy the bytes in the middle
-          memcpy (dest `plusPtr` dfirstByteIdx)  (src `plusPtr` sfirstByteIdx) cnumWholeBytesToCopy
-        dnbitsBeforeByte = 8 - (mod doff 8) -- (DESTINATION) Number of bits before an even byte boundary (offset 15 -> dnbitsBeforeByte = 1)
-        snbitsBeforeByte = 8 - (mod soff 8) -- (SOURCE)
-        dnbitsAfterByte = 8 - (mod (doff + len) 8) -- (DESTINATION) number of bits after the last remaining byte
-        snbitsAfterByte = 8 - (mod (soff + len) 8) -- (SOURCE)
+        doff = off destb
+        soff = off srcb
+        destNLeadingBits = mod doff 8
+        srcNLeadingBits = mod soff 8
+        nLeadingBits = max destNLeadingBits srcNLeadingBits
+        cpyLenBytes = div (len - destNLeadingBits) 8 
 
-        dfirstByteIdx = div (doff + dnbitsBeforeByte) 8
-        sfirstByteIdx = div (soff + snbitsBeforeByte) 8
-        numWholeBytesToCopy = div (len - dnbitsBeforeByte - dnbitsAfterByte) 8
-        cnumWholeBytesToCopy = CSize $ fromIntegral numWholeBytesToCopy
+        off (Buffer o _ _) = o
+        dec p = p `plusPtr` (-1)
+        orcpy dptr sptr f = do
+          (sbyte :: Word8) <- peek sptr
+          (dbyte :: Word8) <- peek dptr
+          poke dptr (sbyte .|. f dbyte)
 
--- TODO: Add values to NullBuffers treating them as 0.
--- | 'plusPtr' for 'Buffer's
--- This is the reason why pointers are as complicated as they are.
--- Say you create a buffer, and pass the result of a plusBuf to another thread,
--- then exit. Now, your original buffer would deallocate the memory the plusBuf version requires.
+-- | 'plusPtr' for 'Buffer's.
 plusBuf :: Buffer -> Int -> Buffer
 plusBuf (Buffer o l ptr) i = Buffer (min l (o + i)) l ptr
 
