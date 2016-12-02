@@ -26,9 +26,11 @@ module Buffer
 (
   bits2bytes,
   bytes2bits,
-  Buffer(..),
+  Buffer,
   newBuffer,
   freeBuffer,
+  fromBits,
+  fromStorable,
   length,
   isAlive,
   setBit,
@@ -97,11 +99,11 @@ showBufferHex = f ""
       | otherwise = do
         -- TODO: replace fromJust with fromMaybe False
         nybble <- packNybble
-                    <$> (fromJust <$> getBit buf 0)
-                    <*> (fromJust <$> getBit buf 1)
-                    <*> (fromJust <$> getBit buf 2)
-                    <*> (fromJust <$> getBit buf 3)
-        f (acc <> [toHex $ fromIntegral nybble]) (buf `plusBuf` 4)
+                    <$> (fromMaybe False <$> getBit buf 0)
+                    <*> (fromMaybe False <$> getBit buf 1)
+                    <*> (fromMaybe False <$> getBit buf 2)
+                    <*> (fromMaybe False <$> getBit buf 3)
+        f ((toHex $ fromIntegral nybble):acc) (buf `plusBuf` 4)
     toHex v
       | v < 10 = chr $ v + 48 -- numeric hex
       | otherwise = chr $ (v - 10) + 65 -- alpha hex
@@ -132,6 +134,12 @@ fromBits bits = g bits =<< newBuffer (P.length bits)
       setBit buf (P.length bits - (P.length xs) - 1) x
       g xs buf
 
+fromStorable :: Storable a => a -> IO Buffer
+fromStorable s = do
+  buf <- newBuffer $ 8 * (sizeOf s)
+  withPtr buf (\ptr -> poke (castPtr ptr) s)
+  return buf
+
 -- | Get the length of a buffer in bits.
 length :: Buffer -> Int
 length (Buffer offset len _) = len - offset
@@ -146,7 +154,7 @@ bufshift b dist = return b -- TODO: implement
 
 -- | Memcpy in bits with buffers.
 bufcpy :: Buffer -> Buffer -> Int -> IO Buffer
-bufcpy db sb len = (withPtr db (\d -> (withPtr sb (\s -> f s d)))) >> return destb
+bufcpy db sb len = (withPtr db (\d -> (withPtr sb (\s -> f s d)))) >> return db
   where f src dest
           | destNLeadingBits /= srcNLeadingBits = do -- Copy up to 7 leading bits 
             orcpy (dec srcFirstByte) (dec destFirstByte) (flip shift nLeadingBits) -- Copy up to 7 leading bits
@@ -160,8 +168,8 @@ bufcpy db sb len = (withPtr db (\d -> (withPtr sb (\s -> f s d)))) >> return des
             srcBytesEnd = srcFirstByte `plusPtr` cpyLenBytes
             destBytesEnd = destFirstByte `plusPtr` cpyLenBytes
 
-        doff = off destb
-        soff = off srcb
+        doff = off db
+        soff = off sb
         destNLeadingBits = mod doff 8
         srcNLeadingBits = mod soff 8
         nLeadingBits = max destNLeadingBits srcNLeadingBits
