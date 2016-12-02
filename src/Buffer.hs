@@ -86,8 +86,6 @@ instance Eq Buffer where
 instance Show Buffer where
   show = unsafePerformIO . showBufferHex
 
--- TODO: Show instance that prints hexadecimal
-
 -- TODO: parse string literals that contain binary escape sequences.
 
 showBufferHex :: Buffer -> IO String
@@ -103,7 +101,6 @@ showBufferHex = f ""
                     <*> (fromJust <$> getBit buf 1)
                     <*> (fromJust <$> getBit buf 2)
                     <*> (fromJust <$> getBit buf 3)
-        print nybble
         f (acc <> [toHex $ fromIntegral nybble]) (buf `plusBuf` 4)
     toHex v
       | v < 10 = chr $ v + 48 -- numeric hex
@@ -126,6 +123,7 @@ freeBuffer :: Buffer -> IO ()
 freeBuffer b@(Buffer _ _ ptr) = releasePtr ptr >> return ()
 
 -- | Create a new buffer from a list of 'Bool's.
+-- (if bits = x:xs, xs contains bits more significant than x).
 fromBits :: [Bool] -> IO Buffer
 fromBits bits = g bits =<< newBuffer (P.length bits)
   where
@@ -142,6 +140,7 @@ length (Buffer offset len _) = len - offset
 isAlive :: Buffer -> IO Bool
 isAlive (Buffer _ _ ptr) = isPtrAlive ptr
 
+-- TODO: ensure this one works
 -- | Exactly like memcpy except for buffers & len is in bits.
 bufcpy :: Buffer -> Buffer -> Int -> IO Buffer
 bufcpy destb@(Buffer doff _ _) srcb@(Buffer soff _ _) len = destb <$ (withPtr destb (\d -> (withPtr srcb (\s -> f s d))))
@@ -177,7 +176,7 @@ bufcpy destb@(Buffer doff _ _) srcb@(Buffer soff _ _) len = destb <$ (withPtr de
 -- Say you create a buffer, and pass the result of a plusBuf to another thread,
 -- then exit. Now, your original buffer would deallocate the memory the plusBuf version requires.
 plusBuf :: Buffer -> Int -> Buffer
-plusBuf (Buffer o l ptr) i = Buffer (o + i) l ptr
+plusBuf (Buffer o l ptr) i = Buffer (min l (o + i)) l ptr
 
 -- | Sets bit @i@ to @on@.
 setBit :: Buffer -> Int -> Bool -> IO ()
