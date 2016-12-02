@@ -7,7 +7,9 @@ Maintainer  : nate@symer.io
 Stability   : stable
 Portability : POSIX
 
-A @Buffer@ is a managed C pointer with a size andoffset associated with it
+A @Buffer@ is a managed C pointer with a size andoffset associated with it.
+This data structure stores the first bit in the lowest index and the last bit in the hightest
+index (big endian). This conflicts with our little-endian architecture.
 
 This is essentially a lighter-weight Haskell ByteString. It takes into account
 the available memory of SIG/XE machines when storing lengths and indeces.
@@ -20,7 +22,7 @@ I became fascinated with computer science.
 
 -}
 
-{-# LANGUAGE ForeignFunctionInterface, ScopedTypeVariables #-}
+{-# LANGUAGE CPP, ForeignFunctionInterface, ScopedTypeVariables #-}
 
 module Buffer
 (
@@ -92,26 +94,28 @@ showBufferHex = f ""
     f acc buf
       | length buf == 0 = return acc
       | otherwise = do
-        -- TODO: replace fromJust with fromMaybe False
         nybble <- packNybble
                     <$> (fromMaybe False <$> getBit buf 0)
                     <*> (fromMaybe False <$> getBit buf 1)
                     <*> (fromMaybe False <$> getBit buf 2)
                     <*> (fromMaybe False <$> getBit buf 3)
-        f (acc <> [(toHex $ fromIntegral nybble)]) (buf `plusBuf` 4)
+        f (acc <> [(toHex $ fromIntegral nybble)]) (buf `plusBuf` 4) 
     toHex v
       | v < 10 = chr $ v + 48 -- numeric hex
       | otherwise = chr $ (v - 10) + 65 -- alpha hex
 
 {-# INLINE packNybble #-}
 packNybble :: Bool -> Bool -> Bool -> Bool -> Word8
-packNybble a b c d = packByte a b c d False False False False
-
-{-# INLINE packByte #-}
-packByte :: Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Word8
-packByte  a b c d e f g h = z a 1 .|. z b 2 .|. z c 4 .|. z d 8 .|. z e 16 .|. z f 32 .|. z g 64 .|. z h 128
+packNybble  a b c d = z a 1 .|. z b 2 .|. z c 4 .|. z d 8
   where z False _ = 0
         z True  n = n
+
+fixEndian :: [a] -> [a]
+#ifdef WORDS_BIGENDIAN
+fixEndian = id
+#else
+fixEndian = reverse
+#endif
 
 -- | Creates a new buffer @len@ bits long.
 newBuffer :: Int -> IO Buffer
@@ -132,6 +136,10 @@ fromBits bits = g 0 bits =<< newBuffer (P.length bits)
     g i (x:xs) buf = do
       setBit buf i x
       g (i + 1) xs buf
+
+fromBitlike :: FiniteBits a => a -> IO Buffer
+fromBitlike = fromBits . toBits
+  where toBits x = map (testBit x) [0..((finiteBitSize x) - 1)]
 
 fromStorable :: Storable a => a -> IO Buffer
 fromStorable s = do
@@ -196,16 +204,37 @@ setBit buf@(Buffer off _ _) i on = void $ withPtr buf f
           poke ptr' $ maskf b
           where ptr' = ptr `plusPtr` d
    
--- | Gets bit @i@, treating the entire buffer as a big-endian bit set (left to right)
+-- | Gets bit @i@
 getBit :: Buffer -> Int -> IO (Maybe Bool)
 getBit buf@(Buffer off _ _) i = withPtr buf $ \ptr -> do
   (byte :: Word8) <- peek $ ptr `plusPtr` d
   return $ testBit byte m
   where (d, m) = divMod (off + i) 8
 
+-- | Sets BYTE @i@ to @b@
+setByte :: Buffer -> Int -> Word8 -> IO ()
+setByte buf@(Buffer off _ _) i byte
+  | i + 1 > (bits2bytes $ length buf) = return ()
+  | i < 0 = return ()
+  | otherwise = void $ withPtr buf f
+  where f ptr
+          | m == 0 = poke aptr byte
+          | otherwise  = do
+            print "BIIIIIIIIITCH"
+            (a :: Word8) <- peek aptr
+            (b :: Word8) <- peek bptr
+            let a' = shiftL byte m .|. a
+                b' = shiftR byte (8 - m) .|. b
+            poke aptr a'
+            poke bptr b'
+          where (d, m) = divMod off 8
+                aptr = ptr `plusPtr` (d + i)
+                bptr = aptr `plusPtr` 1
+
+-- | Gets BYTE @i@
 getByte :: Buffer -> Int -> IO (Maybe Word8)
 getByte buf@(Buffer off _ _) i
-  | i > bits2bytes (length buf) = return Nothing
+  | i >= bits2bytes (length buf) = return Nothing
   | i < 0 = return Nothing
   | otherwise = withPtr buf f
   where
@@ -217,6 +246,8 @@ getByte buf@(Buffer off _ _) i
         return $ shiftR a m .|. shiftL b (8 - m)
       where (d, m) = divMod off 8
             firstByte = ptr `plusPtr` d
+
+-- Bytes are always little bit endian
 
 withPtr :: Buffer -> (Ptr Word8 -> IO a) -> IO (Maybe a)
 withPtr (Buffer _ _ ptr) = withManagedPtr ptr
