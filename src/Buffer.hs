@@ -26,12 +26,10 @@ module Buffer
 (
   bits2bytes,
   bytes2bits,
-  Buffer,
-  nullBuffer,
+  Buffer(..),
   newBuffer,
   freeBuffer,
   length,
-  isNull,
   isAlive,
   setBit,
   getBit,
@@ -50,9 +48,6 @@ import Data.Word
 import Control.Monad
 import Foreign.Storable
 import Foreign.Ptr
--- import Foreign.ForeignPtr
--- import Foreign.ForeignPtr.Unsafe
--- import Foreign.Marshal.Alloc
 import Foreign.C.Types
 import Control.Concurrent.MVar
 import Control.Exception (bracket)
@@ -62,6 +57,7 @@ import System.IO.Unsafe
 import Data.Maybe
 import Data.Monoid
 import Data.Char
+import Data.Bool
 
 bits2bytes :: Int -> Int
 bits2bytes b = d + (if m == 0 then 0 else 1)
@@ -79,16 +75,13 @@ data Buffer = Buffer
                 !Int -- ^ Offset in bits
                 !Int -- ^ Length in bits, ignoring offset
                 (ManagedPtr Word8) -- ^ Actual chunk of memory. See below.
-            | NullBuffer
 
 instance Eq Buffer where
-  NullBuffer == NullBuffer = True
   (Buffer aoff alen amptr) == (Buffer boff blen bmptr) = (aptr == bptr) && alen' == blen'
     where aptr = (unsafeManagedPtrToPtr amptr) `plusPtr` aoff
           alen' = alen - aoff
           bptr = (unsafeManagedPtrToPtr bmptr) `plusPtr` boff
           blen' = blen - boff
-  _ == _ = False
 
 instance Show Buffer where
   show = unsafePerformIO . showBufferHex
@@ -101,36 +94,32 @@ showBufferHex :: Buffer -> IO String
 showBufferHex = f ""
   where
     f :: String -> Buffer -> IO String
-    f acc NullBuffer = return acc
     f acc buf
       | length buf == 0 = return acc
       | otherwise = do
-        putStrLn "HERE"
-        nybble <- packNybbleBE
+        -- TODO: replace fromJust with fromMaybe False
+        nybble <- packNybble
                     <$> (fromJust <$> getBit buf 0)
                     <*> (fromJust <$> getBit buf 1)
                     <*> (fromJust <$> getBit buf 2)
                     <*> (fromJust <$> getBit buf 3)
+        print nybble
         f (acc <> [toHex $ fromIntegral nybble]) (buf `plusBuf` 4)
     toHex v
       | v < 10 = chr $ v + 48 -- numeric hex
-      | otherwise = chr $ v + 65 -- alpha hex
-    packNybbleBE :: Bool -> Bool -> Bool -> Bool -> Word8
-    packNybbleBE a b c d = (toBit 0 a) .|. (toBit 1 b) .|. (toBit 2 c) .|. (toBit 3 d) 
-      where
-        toBit pos True = bit pos
-        toBit _   False = 0
+      | otherwise = chr $ (v - 10) + 65 -- alpha hex
 
--- | Creates a null buffer
-nullBuffer :: Buffer
-nullBuffer = NullBuffer
+{-# INLINE packNybble #-}
+packNybble :: Bool -> Bool -> Bool -> Bool -> Word8
+packNybble  a b c d = z a 1 .|. z b 2 .|. z c 4 .|. z d 8
+  where z False _ = 0
+        z True  n = n
 
 -- | Creates a new buffer @len@ bits long.
 newBuffer :: Int -> IO Buffer
 newBuffer len = do
   ptr <- malloc $ CSize $ fromIntegral $ bits2bytes len
-  mptr <- newManagedPtr ptr
-  return $ Buffer 0 len mptr
+  Buffer 0 len <$> newManagedPtr ptr
 
 -- | Frees a buffer
 freeBuffer :: Buffer -> IO ()
@@ -138,24 +127,19 @@ freeBuffer b@(Buffer _ _ ptr) = releasePtr ptr >> return ()
 
 -- | Create a new buffer from a list of 'Bool's.
 fromBits :: [Bool] -> IO Buffer
-fromBits bits = do
-   buf <- newBuffer (P.length bits)
-   foldM f buf bits
-  where f buf bit = (plusBuf buf 1) <$ setBit buf 0 bit
+fromBits bits = g bits =<< newBuffer (P.length bits)
+  where
+    g [] buf = return buf
+    g (x:xs) buf = do
+      setBit buf (P.length bits - (P.length xs) - 1) x
+      g xs buf
 
 -- | Get the length of a buffer in bits.
 length :: Buffer -> Int
 length (Buffer offset len _) = len - offset
-length NullBuffer            = 0
-
--- | Returns whether or not a buffer is null.
-isNull :: Buffer -> Bool
-isNull NullBuffer = True
-isNull _          = False
 
 -- | Returns whether of not a buffer is alive.
 isAlive :: Buffer -> IO Bool
-isAlive NullBuffer = return False
 isAlive (Buffer _ _ ptr) = isPtrAlive ptr
 
 -- | Exactly like memcpy except for buffers & len is in bits.
@@ -193,32 +177,33 @@ bufcpy destb@(Buffer doff _ _) srcb@(Buffer soff _ _) len = destb <$ (withPtr de
 -- Say you create a buffer, and pass the result of a plusBuf to another thread,
 -- then exit. Now, your original buffer would deallocate the memory the plusBuf version requires.
 plusBuf :: Buffer -> Int -> Buffer
-plusBuf NullBuffer _ = NullBuffer
 plusBuf (Buffer o l ptr) i = Buffer (o + i) l ptr
 
 -- | Sets bit @i@ to @on@.
 setBit :: Buffer -> Int -> Bool -> IO ()
-setBit buf i on = () <$ (withPtr buf $ \ptr -> do
-  (b :: Word8) <- peek ptr'
-  poke ptr' $ (bit (8 - m)) .|. b)
-  where (d,m) = divMod i 8
-        ptr' = ptr `plusPtr` d
+setBit buf@(Buffer off _ _) i on = void $ withPtr buf f
+  where (d,m) = divMod (off + i) 8
+        -- mask = bool zeroBits (bit m) on
+        maskf = (flip (bool Bits.clearBit Bits.setBit on)) m
+        f ptr = do
+          (b :: Word8) <- peek ptr'
+          -- poke ptr' $ mask .|. b
+          poke ptr' $ maskf b
+          where ptr' = ptr `plusPtr` d
    
 -- | Gets bit @i@, treating the entire buffer as a big-endian bit set (left to right)
 getBit :: Buffer -> Int -> IO (Maybe Bool)
-getBit buf i = withPtr buf $ \ptr -> do
-  (byte :: Word8) <- peek $ ptr `plusPtr` (length buf `div` 8)
-  return $ testBit byte (8 - (mod i 8))
+getBit buf@(Buffer off _ _) i = withPtr buf $ \ptr -> do
+  (byte :: Word8) <- peek $ ptr `plusPtr` d
+  return $ testBit byte m
+  where (d, m) = divMod (off + i) 8
 
 withPtr :: Buffer -> (Ptr Word8 -> IO a) -> IO (Maybe a)
-withPtr NullBuffer _ = error "null buffer dereference error"
 withPtr (Buffer _ _ ptr) f = withManagedPtr ptr f
 
 --
 -- INTERNAL
 --     
-
-foreign import ccall "wrapper" mkFinalizerFunPtr :: (Ptr Word8 -> Ptr Word8 -> IO ()) -> IO (FunPtr (Ptr Word8 -> Ptr Word8 -> IO ()))
 
 -- TODO: check: MVars synchronize values across copies
 
