@@ -22,7 +22,7 @@ I became fascinated with computer science.
 
 -}
 
-{-# LANGUAGE CPP, ForeignFunctionInterface, ScopedTypeVariables #-}
+{-# LANGUAGE ForeignFunctionInterface, ScopedTypeVariables #-}
 
 module Buffer
 (
@@ -36,7 +36,8 @@ module Buffer
   setBit,
   getBit,
   bufcpy,
-  plusBuf
+  plusBuf,
+  hPutBuffer
 )
 where
 
@@ -85,7 +86,9 @@ instance Eq Buffer where
 instance Show Buffer where
   show = unsafePerformIO . showBufferHex
 
--- TODO: parse string literals that contain binary escape sequences.
+-- TODO: implement me! 
+hPutBuffer :: Handle -> Buffer -> IO ()
+hPutBuffer hdl buf = return ()
 
 showBufferHex :: Buffer -> IO String
 showBufferHex = f ""
@@ -109,13 +112,6 @@ packNybble :: Bool -> Bool -> Bool -> Bool -> Word8
 packNybble  a b c d = z a 1 .|. z b 2 .|. z c 4 .|. z d 8
   where z False _ = 0
         z True  n = n
-
-fixEndian :: [a] -> [a]
-#ifdef WORDS_BIGENDIAN
-fixEndian = id
-#else
-fixEndian = reverse
-#endif
 
 -- | Creates a new buffer @len@ bits long.
 newBuffer :: Int -> IO Buffer
@@ -159,6 +155,9 @@ isAlive (Buffer _ _ ptr) = isPtrAlive ptr
 bufshift :: Buffer -> Int -> IO Buffer
 bufshift b dist = return b -- TODO: implement
 
+-- TODO: Fix everything for (msb) 76543210 | 76543210 (lsb)
+-- (setBit and getBit were already fixed mostly)
+
 -- | Memcpy in bits with buffers.
 bufcpy :: Buffer -> Buffer -> Int -> IO Buffer
 bufcpy db sb len = (withPtr db (\d -> (withPtr sb (\s -> f s d)))) >> return db
@@ -198,7 +197,7 @@ setBit :: Buffer -> Int -> Bool -> IO ()
 setBit buf@(Buffer off _ _) i on = void $ withPtr buf f
   where (d,m) = divMod (off + i) 8
         -- mask = bool zeroBits (bit m) on
-        maskf = (flip (bool Bits.clearBit Bits.setBit on)) m
+        maskf = (flip (bool Bits.clearBit Bits.setBit on)) (7 - m)
         f ptr = do
           (b :: Word8) <- peek ptr'
           poke ptr' $ maskf b
@@ -208,7 +207,7 @@ setBit buf@(Buffer off _ _) i on = void $ withPtr buf f
 getBit :: Buffer -> Int -> IO (Maybe Bool)
 getBit buf@(Buffer off _ _) i = withPtr buf $ \ptr -> do
   (byte :: Word8) <- peek $ ptr `plusPtr` d
-  return $ testBit byte m
+  return $ testBit byte (7 - m)
   where (d, m) = divMod (off + i) 8
 
 -- | Sets BYTE @i@ to @b@

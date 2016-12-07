@@ -1,5 +1,11 @@
 {-|
-
+Module: Parser
+Description: Parse SIC/XE syntax using the Maybe monad.
+Copyright: I don't want to sue my professors for copyright infringement!
+License: Don't kill people, mmmmkay?
+Maintainer: nate@symer.io
+Stability: honestly, not much
+Portability: Who cares?
 
 -}
 
@@ -9,14 +15,17 @@ module Parser
 (
   Line(..),
   Directive(..),
-  DataDecl(..),
+  DirecType(..),
   Instruction(..),
   Operand(..),
   Comment(..),
   Register(..),
   Identifier(..),
   Immediate(..),
-  parseLine
+  Label(..),
+  tokenizeLine,
+  parseLine,
+  lineLabel
 )
 where
 
@@ -25,65 +34,82 @@ import Data.Bits
 import Data.Char
 import Control.Applicative
 
-data Line = LDirective Directive | LDataDecl DataDecl | LComment Comment | LInstruction Instruction
+data Line = LDirective Directive | LInstruction Instruction deriving (Eq, Show)
 
-parseLine :: String -> Maybe Line
-parseLine str = (LDataDecl <$> parseDataDecl str)
-              <|> (LDirective <$> parseDirective str)
-              <|> (LComment <$> parseComment str)
-              <|> (LInstruction <$> parseInstruction str) 
+lineLabel :: Line -> Maybe Label
+lineLabel (LDirective l _ _) = l
+lineLabel (LInstruction l _ _) = l
+
+tokenizeLine :: String -> [String]
+tokenizeLine ('.':xs) = []
+tokenizeLine str = f [] "" False str
+  where
+    f strs acc False ('\t':xs)
+      | length acc > 0 = f (strs ++ [acc]) "" False xs
+      | otherwise = f strs acc False xs
+    f strs acc inquotes ('\'':xs) = f strs (acc ++ "'") (not inquotes) xs
+    f strs acc inquotes (x:xs) = f strs (acc ++ [x]) inquotes xs
+
+parseLine :: [String] -> Maybe Line
+parseLine toks = (LDirective <$> parseDirective toks) <|> (LInstruction <$> parseInstruction toks)
 
 --
 -- Directives
 --
 
--- TODO: implement
+data DirecType = START | END | RESB | RESW | BYTE | WORD deriving (Eq, Show)
 
-data Directive = Directive
+parseDirecType :: String -> Maybe DirecType
+parseDirecType "START" = Just START
+parseDirecType "END" = Just END
+parseDirecType "RESB" = Just RESB
+parseDirecType "RESW" = Just RESW
+parseDirecType "BYTE" = Just BYTE
+parseDirecType "WORD" = Just WORD
+parseDirecType _ = Nothing
 
-parseDirective :: String -> Maybe Directive
-parseDirective = const Nothing
+data Directive = Directive (Maybe Label) DirecType (Either Immediate String) deriving (Eq, Show)
 
---
--- Data Declarations
---
-
-data DataDecl = DataDecl {
-  dataDeclName :: String,
-  dataDeclSizeBytes :: Int,
-  dataDeclValue :: Maybe Immediate
-} deriving (Eq, Show)
-
-parseDataDecl :: String -> Maybe DataDecl
-parseDataDecl = const Nothing
+parseDirective :: [String] -> Maybe Directive
+parseDirective (l:t:v:_) = Directive <$> parseLabel l <*> parseDirecType t <*> (parseImmediate v <|> pure v)
+parseDirective _ = Nothing
 
 --
 -- Instructions
 --
 
-data Instruction = Instruction Label Mnemonic [Operand] (Maybe Comment) deriving (Eq, Show)
+data Instruction = Instruction (Maybe Label) Mnemonic [Operand] deriving (Eq, Show)
 
-parseInstruction :: String -> Maybe Instruction
-parseInstruction = const Nothing
+parseInstruction :: [String] -> Maybe Instruction
+parseInstruction (l:n:op:_)
+
+
+--
+-- Generic Field parsing
+--
+
+parseField :: String -> (String -> a) -> Maybe a
+parseField _ "" = Nothing
+parseField f str = Just $ f str
 
 --
 -- Mnemonics
 --
 
-data Mnemonic = Mnemonic String
+data Mnemonic = Mnemonic String deriving (Eq, Show)
 
 -- TODO: ensure @str@ is a valid mnemonic
 parseMnemonic :: String -> Maybe Mnemonic
-parseMnemonic = Just . Mnemonic
+parseMnemonic = parseField Mnemonic
 
 --
 -- Labels
 -- 
 
-data Label = Label String
+data Label = Label String deriving (Eq, Show)
 
 parseLabel :: String -> Maybe Label
-parseLabel = Just . Label
+parseLabel = parseField Label
 
 --
 -- Operands
@@ -104,7 +130,7 @@ parseOperand str = (ImmOperand <$> parseImmediate str)
 -- Comments
 --
 
-data Comment = Comment String
+data Comment = Comment String deriving (Eq, Show)
 
 parseComment :: String -> Maybe Comment
 parseComment  = Just . Comment
@@ -139,13 +165,13 @@ parseIdentifier = Just . Identifier
 -- Immediates
 --
 
-data Immediate = INumber Integer | IString String | IHex [Word8] deriving (Eq, Show)
+data Immediate = INumber Integer | IBytes [Word8] deriving (Eq, Show)
 
 parseImmediate :: String -> Maybe Immediate
 parseImmediate ('#':xs) = Just $ INumber $ read xs
 parseImmediate xs = f =<< quoted xs
-  where f ('C', xs) = Just $ IString xs
-        f ('X', xs) = IHex <$> toHex xs
+  where f ('C', xs) = Just $ IBytes $ map (fromIntegral . ord) xs
+        f ('X', xs) = IBytes <$> toHex xs
         f _         = Nothing
 
 --
