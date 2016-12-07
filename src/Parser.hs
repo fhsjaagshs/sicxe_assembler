@@ -14,32 +14,31 @@ Portability: Who cares?
 module Parser
 (
   Line(..),
-  Directive(..),
-  DirecType(..),
-  Instruction(..),
   Operand(..),
-  Comment(..),
   Register(..),
-  Identifier(..),
   Immediate(..),
-  Label(..),
   tokenizeLine,
-  parseLine,
-  lineLabel
+  parseLine
 )
 where
 
+import Text.Read
 import Data.Word
 import Data.Bits
 import Data.Char
 import Control.Applicative
 
-data Line = LDirective Directive | LInstruction Instruction deriving (Eq, Show)
+data Line = Line {
+  lineLabel :: (Maybe String),
+  lineMnemonic :: String,
+  lineOperands :: [Operand]
+} deriving (Eq, Show)
 
-lineLabel :: Line -> Maybe Label
-lineLabel (LDirective l _ _) = l
-lineLabel (LInstruction l _ _) = l
+--
+-- Tokenizer
+--
 
+-- Splits line by tab, respecting quotes
 tokenizeLine :: String -> [String]
 tokenizeLine ('.':xs) = []
 tokenizeLine str = f [] "" False str
@@ -50,72 +49,26 @@ tokenizeLine str = f [] "" False str
     f strs acc inquotes ('\'':xs) = f strs (acc ++ "'") (not inquotes) xs
     f strs acc inquotes (x:xs) = f strs (acc ++ [x]) inquotes xs
 
+--
+-- Lines
+--
+
 parseLine :: [String] -> Maybe Line
-parseLine toks = (LDirective <$> parseDirective toks) <|> (LInstruction <$> parseInstruction toks)
-
---
--- Directives
---
-
-data DirecType = START | END | RESB | RESW | BYTE | WORD deriving (Eq, Show)
-
-parseDirecType :: String -> Maybe DirecType
-parseDirecType "START" = Just START
-parseDirecType "END" = Just END
-parseDirecType "RESB" = Just RESB
-parseDirecType "RESW" = Just RESW
-parseDirecType "BYTE" = Just BYTE
-parseDirecType "WORD" = Just WORD
-parseDirecType _ = Nothing
-
-data Directive = Directive (Maybe Label) DirecType (Either Immediate String) deriving (Eq, Show)
-
-parseDirective :: [String] -> Maybe Directive
-parseDirective (l:t:v:_) = Directive <$> parseLabel l <*> parseDirecType t <*> (parseImmediate v <|> pure v)
-parseDirective _ = Nothing
-
---
--- Instructions
---
-
-data Instruction = Instruction (Maybe Label) Mnemonic [Operand] deriving (Eq, Show)
-
-parseInstruction :: [String] -> Maybe Instruction
-parseInstruction (l:n:op:_)
-
-
---
--- Generic Field parsing
---
-
-parseField :: String -> (String -> a) -> Maybe a
-parseField _ "" = Nothing
-parseField f str = Just $ f str
-
---
--- Mnemonics
---
-
-data Mnemonic = Mnemonic String deriving (Eq, Show)
-
--- TODO: ensure @str@ is a valid mnemonic
-parseMnemonic :: String -> Maybe Mnemonic
-parseMnemonic = parseField Mnemonic
-
---
--- Labels
--- 
-
-data Label = Label String deriving (Eq, Show)
-
-parseLabel :: String -> Maybe Label
-parseLabel = parseField Label
+parseLine (l:n:o:_) = Just $ Line (nonnull l) <$> nonnull n <*> parseOperands o
+parseLine (l:n:_) = Just $ Line (nonnull l) (nonnull n) []
+parseLine _ = Nothing
 
 --
 -- Operands
 --
 
-data Operand = ImmOperand Immediate | IdOperand Identifier | RegOperand Register deriving (Eq, Show)
+-- TODO: FINISH ME!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+data Operand = ImmOperand Immediate
+             | RegOperand Register
+             | IdOperand String     -- \tSTART\tIDENTIFIER
+             | ConstOperand Int     -- myword\tWORD\t300
+               deriving (Eq, Show)
 
 parseOperands :: String -> Maybe [Operand]
 parseOperands str = Nothing -- TODO: Implement me (needs action on ,X)
@@ -124,16 +77,8 @@ parseOperands str = Nothing -- TODO: Implement me (needs action on ,X)
 parseOperand :: String -> Maybe Operand
 parseOperand str = (ImmOperand <$> parseImmediate str)
                  <|> (RegOperand <$> parseRegister str)
-                 <|> (IdOperand <$> parseIdentifier str)
-
---
--- Comments
---
-
-data Comment = Comment String deriving (Eq, Show)
-
-parseComment :: String -> Maybe Comment
-parseComment  = Just . Comment
+                 <|> (ConstOperand <$> maybeRead str)
+                 <|> (IdOperand <$> nonnull str)
 
 --
 -- Registers
@@ -151,15 +96,6 @@ parseRegister "B" = Just B
 parseRegister "T" = Just T
 parseRegister "F" = Just F
 parseRegister _ = Nothing
-
---
--- Identifiers
---
-
-data Identifier = Identifier String deriving (Eq, Show)
-
-parseIdentifier :: String -> Maybe Identifier
-parseIdentifier = Just . Identifier
 
 --
 -- Immediates
@@ -191,10 +127,14 @@ hexchar a
   | between 'A' 'F' a = Just $ fromIntegral $ (ord a - ord 'A') + 10
   | otherwise = Nothing
   where between a b c = ord b >= ord c && ord c >= ord a
-      
  
 quoted :: String -> Maybe (Char, String)
 quoted (x:'\'':xs)
   | last xs == '\'' = Just $ (x, init xs)
   | otherwise = Nothing
 quoted _ = Nothing
+
+nonnull :: String -> Maybe a
+nonnull "" = Nothing
+nonnull str = Just str
+
