@@ -19,23 +19,6 @@ import Data.Word
 import Data.Bits
 
 --
--- Helpers
---
-
-safeIdx :: Int -> [a] -> Maybe a
-safeIdx i xs
-  | length xs > i = Just $ xs !! i
-  | otherwise = Nothing
-
-lookupMnemonic :: String -> Maybe OpDesc
-lookupMnemonic m = find ((==) m . opdescMnemonic) operations
-
-lookupRegister :: Operand -> Maybe Word8
-lookupRegister (ImmOperand _) = Nothing
-lookupRegister (ConstOperand c) = Just $ fromIntegral c -- For things like SHIFTR and SHIFTL
-lookupRegister (IdOperand ident) = lookup ident registers
-
---
 -- High level assembly logic
 --
 
@@ -53,8 +36,8 @@ lineFormat (Line _ (Mnemonic _ extended) oprs) = case lookupMnemonic m of
 sizeofLine :: Line -> Maybe Int
 sizeofLine = lineFormat
 
-assembleLine :: [(String, Word32)] -> Line -> IO (Maybe Buffer)
-assembleLine symtab l@(Line _ (Mnemonic m _) oprs) =
+assembleLine :: Word32 -> [(String, Word32)] -> Line -> IO (Maybe Buffer)
+assembleLine addr symtab l@(Line _ (Mnemonic m _) oprs) =
  g ((,) <$> lineFormat l <*> lookupMnemonic m)
   where
     g (Just (f, OpDesc opc _ _)) = mkinstr opc f oprs
@@ -63,9 +46,53 @@ assembleLine symtab l@(Line _ (Mnemonic m _) oprs) =
     mkinstr opc 2 oprs = format2 opc
                          <$> (safeIdx 0 oprs >>= lookupRegister)
                          <*> (safeIdx 1 oprs >>= lookupRegister)
-    -- TODO: IMPLEMENT format 3 & 4
+    mkinstr opc 3 [a, b] = getDisp addr symtab a >>= format3 (getN a) (getI a) x b p
+      where x = isIndexingReg b && isType OpSimple a
+    mkinstr opc 3 [a] = getDisp addr symtab a >>= format3 (getN a) (getI a) False b p
+    mkinstr opc 4 [a, b] = getAddr a >>= format4 (getN a) (getI a) x b p
+      where x = isIndexingReg b && isType OpSimple a
+    mkinstr opc 4 [a] = getAddr a >>= format4 (getN a) (getI a) False b p
+
     -- TODO: IMPLEMENT DIRECTIVES
+    --       1. ones that assemble
+    --       2. ones that don't assemble
     mkdirec str oprs = return Nothing
+    
+--
+-- Helpers
+--
+
+isIndexingReg :: Operand -> Bool
+isIndexingReg (Operand (Right v) OpSimple) = v == (fst $ indexingRegister)
+isIndexingReg _ = False
+
+isType :: OperandType -> Operand -> Bool
+isType t2 (Operand _ t) = t == t2
+
+getI :: Operand -> Bool
+getI a = isType OpImmediate a || isType OpSimple a
+
+getN :: Operand -> Bool
+getN a = isType OpIndirect a || isType OpSimple a
+
+getDisp :: Word32 -> [(String, Word32)] -> Operand -> Maybe Int
+getDisp addr symtab = const Nothing
+
+getAddr :: Operand >- Maybe Int
+getAddr = const Nothing
+
+safeIdx :: Int -> [a] -> Maybe a
+safeIdx i xs
+  | length xs > i = Just $ xs !! i
+  | otherwise = Nothing
+
+lookupMnemonic :: String -> Maybe OpDesc
+lookupMnemonic m = find ((==) m . opdescMnemonic) operations
+
+lookupRegister :: Operand -> Maybe Word8
+lookupRegister (Operand (Right ident) OpSimple) = lookup ident registers
+lookupRegister (Operand (Left i) OpSimple) = Just $ fromIntegral i
+lookupRegister _ = Nothing
 
 --
 -- Formatting Functions (low-level assembly logic)
@@ -86,10 +113,10 @@ format2 op rega regb
 
 -- TODO: find out which combinations of arguments are forbidden
 
-format3 :: Word8 -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Word16 -> IO (Maybe Buffer)
-format3 op n i x b p e disp = do
+format3 :: Word8 -> Bool -> Bool -> Bool -> Bool -> Bool -> Word16 -> IO (Maybe Buffer)
+format3 op n i x b p disp = do
   b <- newBuffer 24
-  success <- format34DRY b op n i x b p e
+  success <- format34DRY b op n i x b p False
   if success
     then do
       dispb <- fromBitlike disp
@@ -99,10 +126,10 @@ format3 op n i x b p e disp = do
       freeBuffer b
       return Nothing
 
-format4 :: Word8 -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> Word32 -> IO (Maybe Buffer)
-format4 op n i x b p e addr = do
+format4 :: Word8 -> Bool -> Bool -> Bool -> Word32 -> IO (Maybe Buffer)
+format4 op n i x addr = do
   b <- newBuffer 32
-  success <- format34DRY b op n i x b p e
+  success <- format34DRY b op n i x False False True
   if success
     then do
       addrb <- fromBitlike addr

@@ -41,7 +41,10 @@ data Line = Line {
 -- Splits line by whitespace, respecting quotes
 tokenizeLine :: String -> [String]
 tokenizeLine ('.':_) = []
-tokenizeLine str = unfoldr uf str
+tokenizeLine str = splitOn [' ', '\t'] str
+
+splitOn :: [Char] -> String -> [String]
+splitOn cs = unfoldr uf
   where
     -- function for use with unfoldr that unfolds a list of tuples from a string
     uf str
@@ -54,15 +57,13 @@ tokenizeLine str = unfoldr uf str
       | isQuote x = let (inquotes, xs') = span (not . isQuote)
                         (tokpart, remainder) = getok xs'
                     in (inquotes ++ tokpart ++ '\'', drop 1 remainder)
-      | isWhitespace x = ("", xs)
-      | otherwise = let (tokpart, remainder) = span (\c -> not $ isWhitespace c || isQuote c) (x:xs)
+      | isSplitC x = ("", xs)
+      | otherwise = let (tokpart, remainder) = span (\c -> not $ isSplitC c || isQuote c) (x:xs)
                         (tokpart2, remainder') = getok remainder'
                     in (tokpart ++ tokpart2, remainder')
-    isWhitespace ' ' = True
-    isWhitespace '\t' = True
-    isWhitespace _ = False
     isQuote '\'' = True
     isQuote _ = False 
+    isSplitC c = c `elem` cs
 
 --
 -- Lines
@@ -91,41 +92,32 @@ parseMnemonic = fmap f . nonnull
 -- Operands
 --
 
--- TODO: Finish implementing operand parsing
-
-data Operand = ImmOperand Immediate
-             | IdOperand String Bool -- "\tSTART\tIDENTIFIER" or "MULR A,B"
-             | ConstOperand Int -- myword\tWORD\t300
-               deriving (Eq, Show)
-
--- TODO: "@" prefix and ",X" suffix
+data OperandType = OpSimple | OpIndirect | OpImmediate deriving (Eq, Show)
+data Operand = Operand {
+  operandValue :: (Either Integer String),
+  operandType :: OperandType
+} deriving (Eq, Show)
 
 parseOperands :: String -> Maybe [Operand]
-parseOperands
-parseOperands str = Nothing -- TODO: Implement me (needs action on ,X)
+parseOperands = mapM parseOperand . splitOn [',']
 
--- * Parse things like ,X on operands
+-- TODO: rework parsing C'' and X''
+--       they may overlap registers
 parseOperand :: String -> Maybe Operand
-parseOperand str = (ImmOperand <$> parseImmediate str)
-                 <|> (ConstOperand <$> maybeRead str)
-                 <|> (IdOperand <$> nonnull str)
+parseOperand ('#':xs) = (flip Operand OpImmediate) <$> (eitherOr numeric alphaNumeric)
+parseOperand ('@':xs) = (flip Operand OpIndirect) <$> (eitherOr numeric alphaNumeric)
+parseOperand ('C':x:xs) = flip Operand OpImmediate . bytesToInteger . map (fromIntegral . ord) <$> quoted (x:xs)
+parseOperand ('X':x:xs) = flip Operand OpImmediate . bytesToInteger . toHex <$> quoted (x:xs)
+parseOperand xs       = (flip Operand OpSimple) <$> (eitherOr numeric alphaNumeric) OpSimple
 
 --
--- Immediates
+-- Hex & Byte Helpers
 --
 
-data Immediate = IConstant Integer | IIdentifier String | IBytes [Word8] deriving (Eq, Show)
-
-parseImmediate :: String -> Maybe Immediate
-parseImmediate ('#':xs) = (IConstant <$> maybeRead xs) <|> (Just $ IIdentifier xs)
-parseImmediate xs = f =<< quoted xs
-  where f ('C', xs) = Just $ IBytes $ map (fromIntegral . ord) xs
-        f ('X', xs) = IBytes <$> toHex xs
-        f _         = Nothing
-
---
--- Helpers
---
+bytesToInteger :: [Word8] -> Integer
+bytesToInteger = f [] 0
+  where f acc _ [] = acc
+        f acc i (b:bs) = f (acc + (2 ^ (8 * i))) bs
 
 toHex :: String -> Maybe [Word8]
 toHex = fmap (group []) . mapM (hexchar . toUpper)
@@ -141,17 +133,49 @@ hexchar a
   | otherwise = Nothing
   where between a b c = ord b >= ord c && ord c >= ord a
 
+--
+-- Predicates
+--
  
 isNumeric :: Char -> Bool
-isNumeric c = ord c >= ord '0' && ord c < ord '9'
+isNumeric c = ord c >= ord '0' && ord c <= ord '9'
 
-quoted :: String -> Maybe (Char, String)
-quoted (x:'\'':xs)
-  | last xs == '\'' = Just $ (x, init xs)
-  | otherwise = Nothing
-quoted _ = Nothing
+isAlphabetic :: Char -> Bool
+isAlphabetic c = c' >= ord 'A' && c' <= ord 'Z'
+  where c' = ord $ upcase c
+
+isAlphaNum :: Char -> Bool
+isAlphaNum c = isNumeric c || isAlphabetic c
+
+--
+-- General parsers
+--
+
+quoted :: String -> Maybe String
+quoted = f =<< nonnull
+  where f ('\'':xs)
+          | null after = Just before
+          | otherwise = Nothing 
+        where (before,after) = span ((/=) '\'') xs
 
 nonnull :: String -> Maybe a
 nonnull "" = Nothing
 nonnull str = Just str
 
+numeric :: String -> Maybe a
+numeric = predicated isNumeric
+
+alphaNumeric :: String -> Maybe a
+alphaNumeric = predicated isAlphaNum
+
+-- | Makes a parser from a predicate
+predicated :: (Char -> Bool) -> String -> Maybe String
+predicated p str = nonnull =<< unfoldr (mkf p) str
+  where mkf _ [] = Nothing
+        mkf pred (x:xs)
+          | pred x = Just (Just x, xs) 
+          | otherwise = Just (Nothing, "")
+
+-- | Makes a choice parser
+eitherOr :: (String -> Maybe l) -> (String -> Maybe r) -> String -> Maybe (Either l r)
+eitherOr l r str = (Left <$> l str) <|> (Right <$> r str)

@@ -2,6 +2,7 @@ module Definitions
 (
   OpDesc(..)
   registers,
+  indexingRegister,
   operations,
 )
 where
@@ -26,6 +27,13 @@ registers = accum ("", 0) $ do
   register 9 "SW"
   where
     register n str = setIncomplete (str, n) >> complete
+
+-- NOTE: I wish there were a more abstract way to
+-- define this behavior so that this module doesn't
+-- limit the assembler to only being able to assemble
+-- an assembly language with an indexing register.
+indexingRegister :: (String, Word8)
+indexingRegister = ("X", 1)
 
 data OpDesc = OpDesc {
   opdescOpcode :: Word8,
