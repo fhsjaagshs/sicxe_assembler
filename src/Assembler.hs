@@ -7,6 +7,7 @@
 module Assembler
 (
   lineFormat,
+  sizeofLine,
   assembleLine
 )
 where
@@ -38,8 +39,6 @@ lookupRegister (IdOperand ident) = lookup ident registers
 -- High level assembly logic
 --
 
--- TODO: registers in sym tab???????
-
 lineFormat :: Line -> Maybe Int 
 lineFormat (Line _ (Mnemonic _ extended) oprs) = case lookupMnemonic m of
   Nothing -> Nothing
@@ -50,7 +49,10 @@ lineFormat (Line _ (Mnemonic _ extended) oprs) = case lookupMnemonic m of
     (True, False, True) -> Just 4
     _ -> Nothing
 
--- TODO: implement assembly
+-- TODO: implement sizeofLine for directives
+sizeofLine :: Line -> Maybe Int
+sizeofLine = lineFormat
+
 assembleLine :: [(String, Word32)] -> Line -> IO (Maybe Buffer)
 assembleLine symtab l@(Line _ (Mnemonic m _) oprs) =
  g ((,) <$> lineFormat l <*> lookupMnemonic m)
@@ -61,6 +63,7 @@ assembleLine symtab l@(Line _ (Mnemonic m _) oprs) =
     mkinstr opc 2 oprs = format2 opc
                          <$> (safeIdx 0 oprs >>= lookupRegister)
                          <*> (safeIdx 1 oprs >>= lookupRegister)
+    -- TODO: IMPLEMENT format 3 & 4
     -- TODO: IMPLEMENT DIRECTIVES
     mkdirec str oprs = return Nothing
 
