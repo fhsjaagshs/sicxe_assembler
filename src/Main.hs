@@ -30,10 +30,18 @@ main = do
 -- Assembles each line to a buffer
 assemble :: [String] -> IO [Buffer]
 assemble lines = do
-  let syntax = tokenizeLine lines >>= parseLine
-      
+  let lines = map tokenizeLine lines
+      syntax = mapM parseLine lines
+  buffers <- mapM assembleLine syntax
   print syntax
   return []
+  where
+    printlns [] _ = return ()
+    printlns _ [] = return ()
+    printlns (l:ls) (b:bs) = do
+      bhex <- showBufferHex b
+      putStrLn $ intercalate "\t" $ l ++ [bhex]
+      printlns ls bs
 
 buildSymbolTable :: 
 

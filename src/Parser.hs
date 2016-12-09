@@ -30,7 +30,7 @@ import Control.Applicative
 
 data Line = Line {
   lineLabel :: (Maybe String),
-  lineMnemonic :: String,
+  lineMnemonic :: Mnemonic,
   lineOperands :: [Operand]
 } deriving (Eq, Show)
 
@@ -38,25 +38,54 @@ data Line = Line {
 -- Tokenizer
 --
 
--- Splits line by tab, respecting quotes
+-- Splits line by whitespace, respecting quotes
 tokenizeLine :: String -> [String]
-tokenizeLine ('.':xs) = []
-tokenizeLine str = f [] "" False str
+tokenizeLine ('.':_) = []
+tokenizeLine str = unfoldr uf str
   where
-    f strs acc False ('\t':xs)
-      | length acc > 0 = f (strs ++ [acc]) "" False xs
-      | otherwise = f strs acc False xs
-    f strs acc inquotes ('\'':xs) = f strs (acc ++ "'") (not inquotes) xs
-    f strs acc inquotes (x:xs) = f strs (acc ++ [x]) inquotes xs
+    -- function for use with unfoldr that unfolds a list of tuples from a string
+    uf str
+      | length str == 0 = Nothing
+      | otherwise = Just $ getok str
+
+    -- parses a single token, respecting single quotes
+    getok [] = []
+    getok (x:xs)
+      | isQuote x = let (inquotes, xs') = span (not . isQuote)
+                        (tokpart, remainder) = getok xs'
+                    in (inquotes ++ tokpart ++ '\'', drop 1 remainder)
+      | isWhitespace x = ("", xs)
+      | otherwise = let (tokpart, remainder) = span (\c -> not $ isWhitespace c || isQuote c) (x:xs)
+                        (tokpart2, remainder') = getok remainder'
+                    in (tokpart ++ tokpart2, remainder')
+    isWhitespace ' ' = True
+    isWhitespace '\t' = True
+    isWhitespace _ = False
+    isQuote '\'' = True
+    isQuote _ = False 
 
 --
 -- Lines
 --
 
 parseLine :: [String] -> Maybe Line
-parseLine (l:n:o:_) = Just $ Line (nonnull l) <$> nonnull n <*> parseOperands o
-parseLine (l:n:_) = Just $ Line (nonnull l) (nonnull n) []
+parseLine (l:n:o:_) = Just $ Line (nonnull l) <$> (parseMnemonic n) <*> parseOperands o
+parseLine (l:n:_) = Just $ Line (nonnull l) (parseMnemonic n) []
 parseLine _ = Nothing
+
+--
+-- Mnemonics
+--
+
+data Mnemonic = Mnemonic {
+  mnemonic :: String,
+  mnemonicExtended :: Bool
+} deriving (Eq, Show)
+
+parseMnemonic :: String -> Maybe Mnemonic
+parseMnemonic = fmap f . nonnull 
+  where f ('+':xs) = Mnemonic xs True
+        f xs       = Mnemonic xs False
 
 --
 -- Operands
@@ -65,8 +94,7 @@ parseLine _ = Nothing
 -- TODO: FINISH ME!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 data Operand = ImmOperand Immediate
-             | RegOperand Register
-             | IdOperand String     -- \tSTART\tIDENTIFIER
+             | IdOperand String     -- "\tSTART\tIDENTIFIER" or "MULR A,B"
              | ConstOperand Int     -- myword\tWORD\t300
                deriving (Eq, Show)
 
@@ -76,35 +104,17 @@ parseOperands str = Nothing -- TODO: Implement me (needs action on ,X)
 -- * Parse things like ,X on operands
 parseOperand :: String -> Maybe Operand
 parseOperand str = (ImmOperand <$> parseImmediate str)
-                 <|> (RegOperand <$> parseRegister str)
                  <|> (ConstOperand <$> maybeRead str)
                  <|> (IdOperand <$> nonnull str)
-
---
--- Registers
---
-
-data Register = A | X | L | PC | SW | B | T | F deriving (Eq, Show)
-
-parseRegister :: String -> Maybe Register
-parseRegister "A" = Just A
-parseRegister "X" = Just X
-parseRegister "L" = Just L
-parseRegister "PC" = Just PC
-parseRegister "SW" = Just SW
-parseRegister "B" = Just B
-parseRegister "T" = Just T
-parseRegister "F" = Just F
-parseRegister _ = Nothing
 
 --
 -- Immediates
 --
 
-data Immediate = INumber Integer | IBytes [Word8] deriving (Eq, Show)
+data Immediate = IConstant Integer | IIdentifier String | IBytes [Word8] deriving (Eq, Show)
 
 parseImmediate :: String -> Maybe Immediate
-parseImmediate ('#':xs) = Just $ INumber $ read xs
+parseImmediate ('#':xs) = (IConstant <$> maybeRead xs) <|> (Just $ IIdentifier xs)
 parseImmediate xs = f =<< quoted xs
   where f ('C', xs) = Just $ IBytes $ map (fromIntegral . ord) xs
         f ('X', xs) = IBytes <$> toHex xs
@@ -127,7 +137,11 @@ hexchar a
   | between 'A' 'F' a = Just $ fromIntegral $ (ord a - ord 'A') + 10
   | otherwise = Nothing
   where between a b c = ord b >= ord c && ord c >= ord a
+
  
+isNumeric :: Char -> Bool
+isNumeric c = ord c >= ord '0' && ord c < ord '9'
+
 quoted :: String -> Maybe (Char, String)
 quoted (x:'\'':xs)
   | last xs == '\'' = Just $ (x, init xs)

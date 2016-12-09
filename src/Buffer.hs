@@ -30,7 +30,6 @@ module Buffer
   newBuffer,
   freeBuffer,
   fromBits,
-  fromStorable,
   length,
   isAlive,
   setBit,
@@ -56,18 +55,31 @@ import Control.Concurrent.MVar
 import Control.Exception (bracket)
 import qualified Prelude as P (length)
 import Prelude hiding (length)
+import System.IO
 import System.IO.Unsafe
 import Data.Maybe
 import Data.Monoid
 import Data.Char
 import Data.Bool
 
+idx2bitbyte :: Int -> (Int, Int)
+idx2bitbyte idx = (7 - mod idx 8, div idx 8)
+
+bitbyte2idx :: (Int, Int) -> Int
+bitbyte2idx (bit, byte) = (7 - bit) + (byte * 8)
+
 bits2bytes :: Int -> Int
 bits2bytes b = d + (if m == 0 then 0 else 1)
   where (d,m) = divMod b 8
 
+toBits :: FiniteBits a => a -> [Bool]
+toBits x = map (testBit x . addTup . idx2bitbyte) [0..bitlen - 1]
+  where addTup (a, b) = a + b
+        bitlen = finiteBitSize x
+
 foreign import ccall unsafe "string.h" memcpy :: Ptr a -> Ptr a -> CSize -> IO (Ptr a)
 foreign import ccall unsafe "stdlib.h" malloc :: CSize -> IO (Ptr a)
+foreign import ccall unsafe "stdlib.h" calloc :: CSize -> CSize -> IO (Ptr a)
 foreign import ccall unsafe "stdlib.h" free   :: Ptr a -> IO ()
 
 -- | Buffer type.
@@ -86,9 +98,8 @@ instance Eq Buffer where
 instance Show Buffer where
   show = unsafePerformIO . showBufferHex
 
--- TODO: implement me! 
 hPutBuffer :: Handle -> Buffer -> IO ()
-hPutBuffer hdl buf = return ()
+hPutBuffer hdl buf = void $ withPtr buf $ \ptr -> hPutBuf hdl ptr (bits2bytes $ length buf)
 
 showBufferHex :: Buffer -> IO String
 showBufferHex = f ""
@@ -116,7 +127,7 @@ packNybble  a b c d = z a 1 .|. z b 2 .|. z c 4 .|. z d 8
 -- | Creates a new buffer @len@ bits long.
 newBuffer :: Int -> IO Buffer
 newBuffer len = do
-  ptr <- malloc $ CSize $ fromIntegral $ bits2bytes len
+  ptr <- calloc (CSize $ fromIntegral $ bits2bytes len) (CSize 1)
   Buffer 0 len <$> newManagedPtr ptr
 
 -- | Frees a buffer
@@ -135,13 +146,6 @@ fromBits bits = g 0 bits =<< newBuffer (P.length bits)
 
 fromBitlike :: FiniteBits a => a -> IO Buffer
 fromBitlike = fromBits . toBits
-  where toBits x = map (testBit x) [0..((finiteBitSize x) - 1)]
-
-fromStorable :: Storable a => a -> IO Buffer
-fromStorable s = do
-  buf <- newBuffer $ 8 * (sizeOf s)
-  withPtr buf (\ptr -> poke (castPtr ptr) s)
-  return buf
 
 -- | Get the length of a buffer in bits.
 length :: Buffer -> Int
@@ -150,10 +154,6 @@ length (Buffer offset len _) = len - offset
 -- | Returns whether of not a buffer is alive.
 isAlive :: Buffer -> IO Bool
 isAlive (Buffer _ _ ptr) = isPtrAlive ptr
-
--- | Like Data.Bits.shift, but works on buffers
-bufshift :: Buffer -> Int -> IO Buffer
-bufshift b dist = return b -- TODO: implement
 
 -- TODO: Fix everything for (msb) 76543210 | 76543210 (lsb)
 -- (setBit and getBit were already fixed mostly)
@@ -219,7 +219,6 @@ setByte buf@(Buffer off _ _) i byte
   where f ptr
           | m == 0 = poke aptr byte
           | otherwise  = do
-            print "BIIIIIIIIITCH"
             (a :: Word8) <- peek aptr
             (b :: Word8) <- peek bptr
             let a' = shiftL byte m .|. a
@@ -245,8 +244,6 @@ getByte buf@(Buffer off _ _) i
         return $ shiftR a m .|. shiftL b (8 - m)
       where (d, m) = divMod off 8
             firstByte = ptr `plusPtr` d
-
--- Bytes are always little bit endian
 
 withPtr :: Buffer -> (Ptr Word8 -> IO a) -> IO (Maybe a)
 withPtr (Buffer _ _ ptr) = withManagedPtr ptr
