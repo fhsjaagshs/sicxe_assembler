@@ -6,7 +6,7 @@
 
 module Assembler
 (
-  sizeofLine,
+  lineFormat,
   assembleLine
 )
 where
@@ -36,22 +36,33 @@ lookupRegister (IdOperand ident) = lookup ident registers
 
 --
 -- High level assembly logic
+--
 
-sizeofLine :: Line -> Int 
+-- TODO: registers in sym tab???????
+
+lineFormat :: Line -> Maybe Int 
+lineFormat (Line _ (Mnemonic _ extended) oprs) = case lookupMnemonic m of
+  Nothing -> Nothing
+  Just (OpDesc _ _ [1]) = Just 1
+  Just (OpDesc _ _ [2]) = Just 2
+  Just (OpDesc _ _ fs) = case (extended, 3 `elem` fs, 4 `elem` fs) of
+    (False, True, False) -> Just 3
+    (True, False, True) -> Just 4
+    _ -> Nothing
 
 -- TODO: implement assembly
-assembleLine :: Line -> IO (Maybe Buffer)
-assembleLine (Line _ (Mnemonic m extended) oprs) = do
-  case lookupMnemonic of
-    Nothing -> return Nothing -- TODO: directives would go here
-    Just (OpDesc opc _ fs) -> do
-      if 1 `elem` fs
-        then format1 opc
-        else if 2 `elem` fs
-          then format2 op
-                 <$> (safeIdx 0 oprs >>= lookupRegister)
-                 <$> (safeIdx 1 oprs >>= lookupRegister)
-          else return Nothing -- NO IDEA HOW TO IMPLEMENT 3/4 
+assembleLine :: [(String, Word32)] -> Line -> IO (Maybe Buffer)
+assembleLine symtab l@(Line _ (Mnemonic m _) oprs) =
+ g ((,) <$> lineFormat l <*> lookupMnemonic m)
+  where
+    g (Just (f, OpDesc opc _ _)) = mkinstr opc f oprs
+    g Nothing                    = mkdirec m oprs
+    mkinstr opc 1 _    = format1 opc
+    mkinstr opc 2 oprs = format2 opc
+                         <$> (safeIdx 0 oprs >>= lookupRegister)
+                         <*> (safeIdx 1 oprs >>= lookupRegister)
+    -- TODO: IMPLEMENT DIRECTIVES
+    mkdirec str oprs = return Nothing
 
 --
 -- Formatting Functions (low-level assembly logic)

@@ -94,11 +94,14 @@ parseMnemonic = fmap f . nonnull
 -- TODO: FINISH ME!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 data Operand = ImmOperand Immediate
-             | IdOperand String     -- "\tSTART\tIDENTIFIER" or "MULR A,B"
+             | IdOperand String Bool     -- "\tSTART\tIDENTIFIER" or "MULR A,B"
              | ConstOperand Int     -- myword\tWORD\t300
                deriving (Eq, Show)
 
+-- TODO: "@" prefix and ",X" suffix
+
 parseOperands :: String -> Maybe [Operand]
+parseOperands
 parseOperands str = Nothing -- TODO: Implement me (needs action on ,X)
 
 -- * Parse things like ,X on operands
