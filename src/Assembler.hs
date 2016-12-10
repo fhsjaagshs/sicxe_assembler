@@ -24,7 +24,7 @@ import Control.Monad
 import Control.Monad.State.Lazy
 import Control.Monad.Trans.Maybe
 
-assemble :: [Line] -> [[Word8]]
+assemble :: [Line] -> Maybe [[Word8]]
 assemble ls = runAssembler 0 mempty $ do
   firstPass ls
   resetAddress
@@ -91,7 +91,7 @@ firstPass xs = f xs
 --
 
 -- | Does the second pass of assembly, assembling
--- all of the lines of code into 
+-- all of the lines of assembly code into object code 
 secondPass :: [Line] -> Assembler (Maybe [[Word8]])
 secondPass ls = fmap sequence <$> mapM assembleLine ls
 
@@ -100,16 +100,19 @@ lineFormat :: Line -> Assembler (Maybe Int)
 lineFormat (Line _ (Mnemonic _ extended) oprs) = f =<< lookupMnemonic m
   where
     f = findM (valid oprs) . opdescFormats
-    valid []    1 = return True
-    valid (_:_) 2 = return True
-    valid (Operand (Left _) OpImmediate:_) = False
-    valid (x:_) 3 = do
+    -- | @valid@ is a predicate that validates
+    -- the line's operands with regard to the
+    -- instruction format(s) dictated by the mnemonic. 
+    valid []     1 = return True
+    valid (x:xs) 2 = return $ all $ map (isJust . simpleToByte) (x:xs)
+    valid (Operand (Left _) OpImmediate:_) 3 = False
+    valid (x:_)  3 = do
       addrc <- address
       addrx <- fromMaybe addrc <$> getAddr x
       let disp = addrx - addrc
       return $ not $ disp < -2048 || disp > 4095
-    valid (_:_) 4 = return True
-    valid _     _ = return False
+    valid (_:_)  4 = return True
+    valid _      _ = return False
 
 -- | Determine the size of a line (directive or instruction) of SIC/XE
 -- assembler code without accessing the symbol table or assembling code.
