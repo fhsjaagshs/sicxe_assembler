@@ -6,9 +6,7 @@
 
 module Assembler
 (
-  sizeofLine,
-  assembleLine,
-  mkSymbolTable
+  assemble
 )
 where
 
@@ -17,70 +15,225 @@ import Definitions
 import Data.Word
 import Data.Bits
 
+import Data.HashMap.Lazy (HashMap)
+import qualified Data.HashMap.Lazy as HM
+
+import Data.Foldable
+import Data.Monoid
+import Control.Monad
+import Control.Monad.State.Lazy
+import Control.Monad.Trans.Maybe
+
+assemble :: [Line] -> [[Word8]]
+assemble ls = runAssembler 0 mempty $ do
+  firstPass ls
+  resetAddress
+  secondPass ls
+
+type Address = Word32 -- | 1MB Address
+type SymbolTable = HashMap String Address -- | Symbol table
+type Assembler a = State (Address, SymbolTable) a -- | Assembler monad
+
+-- | Run your assembler.
+runAssembler :: Address -> SymbolTable -> Assembler a -> a
+runAssembler a st = evalState (a, st)
+
+-- | Get the current address.
+address :: Assembler Address
+address = fst <$> get
+
+-- | Set the current address 
+setAddress :: Address -> Assembler ()
+setAddress addr = state $ \(_, st) -> ((), (addr, st))
+
+-- | Set the current address to the start of the program.
+-- Use this instead of @setAddress 0@ because 'Assembler'
+-- may change to support START and END better.
+resetAddress :: Assembler ()
+resetAddress = setAddress 0
+
+-- | Advance the current address by @by@
+advanceAddress :: Address -> Assembler ()
+advanceAddress by = address >>= setAddress . (+) by
+
+-- | The symbol table.
+symbolTable :: Assembler SymbolTable
+symbolTable = snd <$> get
+
+-- | Sets a symbol in the symbol table
+setSymbol :: String -> Address -> Assembler ()
+setSymbol sym a = state $ \(addr, st) -> ((), (addr, HM.insert sym a st))
+
+-- | Gets a symbol from the symbol table
+getSymbol :: String -> Assembler (Maybe Address)
+getSymbol sym = HM.lookup sym <$> symbolTable
+
 --
--- High level assembly logic
+-- First Pass
 --
 
--- TODO: fix fallback to format 4 when format 3 cannot handle an instr 
-lineFormat :: Line -> Maybe Int 
-lineFormat (Line _ (Mnemonic _ extended) oprs) = case lookupMnemonic m of
-  Nothing -> Nothing
-  Just (OpDesc _ _ [1]) = Just 1
-  Just (OpDesc _ _ [2]) = Just 2
-  Just (OpDesc _ _ fs) = case (extended, 3 `elem` fs, 4 `elem` fs) of
-    (False, True, False) -> Just 3
-    (True, False, True) -> Just 4
-    _ -> Nothing
-
--- TODO: implement sizeofLine for directives
-sizeofLine :: Line -> Maybe Int
-sizeofLine = lineFormat
-
--- | Assembles a line of SIC/XE ASM as parsed by Parser. Returns a list of bytes in Big Endian order and the next address.
-assembleLine :: Word32 -> [(String, Word32)] -> Line -> Maybe ([Word8], Word32)
-assembleLine addr symtab l@(Line _ (Mnemonic m _) oprs) = (,) <$> mb <*> maddr
+-- | Does the first pass of assembly, finding all of
+-- the labels and recording them in the symtab.
+firstPass :: [Line] -> Assembler ()
+firstPass xs = f xs
   where
-    mbools = g ((,) <$> lineFormat l <*> sizeofLine l))
-    maddr = (addr +) <$> sizeofLine l
+    f [] = return ()
+    f ((Line (Just l) _ _):ls) = do
+      address >>= setSymbol l
+      advanceAddress $ sizeofLine l
+      f ls  
+    f (l:ls) = do
+      advanceAddress $ sizeofLine l
+      f ls
+
+--
+-- Second Pass (High Level)
+--
+
+-- | Does the second pass of assembly, assembling
+-- all of the lines of code into 
+secondPass :: [Line] -> Assembler (Maybe [[Word8]])
+secondPass ls = fmap sequence <$> mapM assembleLine ls
+
+-- | Determine the format of a line of SIC/XE assembler.
+lineFormat :: Line -> Assembler (Maybe Int)
+lineFormat (Line _ (Mnemonic _ extended) oprs) = f =<< lookupMnemonic m
+  where
+    f = findM (valid oprs) . opdescFormats
+    valid []    1 = return True
+    valid (_:_) 2 = return True
+    valid (Operand (Left _) OpImmediate:_) = False
+    valid (x:_) 3 = do
+      addrc <- address
+      addrx <- fromMaybe addrc <$> getAddr x
+      let disp = addrx - addrc
+      return $ not $ disp < -2048 || disp > 4095
+    valid (_:_) 4 = return True
+    valid _     _ = return False
+
+-- | Determine the size of a line (directive or instruction) of SIC/XE
+-- assembler code without accessing the symbol table or assembling code.
+sizeofLine :: Line -> Assembler (Maybe Int)
+sizeofLine = lineFormat -- TODO: implement sizeofLine for directives
+
+-- | Assembles a line of SIC/XE ASM as parsed by Parser.
+-- Returns a list of bytes in Big Endian order and the next address.
+assembleLine :: Line -> Assembler (Maybe [Word8])
+assembleLine l@(Line _ (Mnemonic m _) oprs) = do
+  lf <- lineFormat l
+  g $ (,) <$> lf <*> lookupMnemonic m
+  where
     g (Just (f, OpDesc opc _ _)) = mkinstr opc f oprs
     g Nothing                    = mkdirec m oprs
-    mkinstr opc 1 _    = Just $ format1 opc
-    mkinstr opc 2 oprs = format2 opc
-                         <$> (safeIdx 0 oprs >>= simpleToByte)
-                         <*> (safeIdx 1 oprs >>= simpleToByte)
-    mkinstr opc 3 [a, b] = format3 (getN a) (getI a) (getX a b) <$> getAddr symtab a
-    mkinstr opc 3 [a]    = format3 (getN a) (getI a) False      <$> getAddr symtab a
-    mkinstr opc 4 [a, b] = format4 (getN a) (getI a) (getX a b) <$> getAddr symtab a
-    mkinstr opc 4 [a]    = format4 (getN a) (getI a) False      <$> getAddr symtab a
+    mkinstr opc 1 _      = format1 opc
+    mkinstr opc 2 [a]    = mayapply (format2 opc) (simpleToByte a) (Just 0)
+    mkinstr opc 2 [a, b] = mayapply (format2 opc) (simpleToByte a) (simpleToByte b)
+    mkinstr opc 3 [a, b] = format3 (getN a) (getI a) (getX a b) <$> getAddr a
+    mkinstr opc 3 [a]    = format3 (getN a) (getI a) False      <$> getAddr a
+    mkinstr opc 4 [a, b] = format4 (getN a) (getI a) (getX a b) <$> getAddr a
+    mkinstr opc 4 [a]    = format4 (getN a) (getI a) False      <$> getAddr a
 
     -- TODO: IMPLEMENT DIRECTIVES
     --       1. ones that assemble
     --       2. ones that don't assemble
     mkdirec str oprs = return Nothing
+
+-- | Calculates the absolute address contained in an operand.
+getAddr :: Operand -> Assembler (Maybe Address)
+getAddr (Operand (Left s) _) = return $ Just s
+getAddr (Operand (Right s) _) = getSymbol s
     
 --
 -- Helpers
 --
 
+-- | Determines if @operand@ is the index register.
 isIndexingReg :: Operand -> Bool
-isIndexingReg (Operand (Right v) OpSimple) = v == (fst $ indexingRegister)
+isIndexingReg (Operand (Right v) OpSimple) = v == fst indexingRegister
 isIndexingReg _ = False
 
+-- | Determines if @operand@ is a given 'OperandType'
 isType :: OperandType -> Operand -> Bool
 isType t2 (Operand _ t) = t == t2
 
+-- | DRY to calculate X of nixbpe.
 getX :: Operand -> Operand -> Bool
 getX a b = isIndexingReg b && isType OpSimple a
 
+-- | DRY to calculate I of nixbpe
 getI :: Operand -> Bool
 getI a = isType OpImmediate a || isType OpSimple a
 
+-- | DRY to calculate N of nixbpe
 getN :: Operand -> Bool
 getN a = isType OpIndirect a || isType OpSimple a
 
-getAddr :: [(String, Word32)] -> Operand -> Maybe Word32
-getAddr symtab (Operand (Left s) _) = Just s
-getAddr symtab (Operand (Right s) _) = lookup symtab s
+-- | Safely gets the @i@th element in the list @xs@.
+safeIdx :: Int -> [a] -> Maybe a
+safeIdx i xs
+  | length xs > i = Just $ xs !! i
+  | otherwise = Nothing
+
+-- | Looks up an opcode from the 'Descriptions' module.
+lookupMnemonic :: String -> Maybe OpDesc
+lookupMnemonic m = find ((==) m . opdescMnemonic) operations
+
+-- | Turns an operand into either a register code or its integral value.
+simpleToByte :: Operand -> Maybe Word8
+simpleToByte (Operand (Right ident) OpSimple) = lookup ident registers
+simpleToByte (Operand (Left i) OpSimple) = Just $ fromIntegral i
+simpleToByte _ = Nothing
+
+-- | Monadic version of 'find'.
+findM :: (Monad m, Foldable f) => (a -> m (Maybe b)) -> f a -> m (Maybe b)
+findM f = getFirstM . foldMap (FirstM . f)
+
+mayapply :: (Monad m) => (a -> b -> m c) -> Maybe a -> Maybe b -> m (Maybe c)
+mayapply f (Just a) (Just b) = Just <$> f a b
+mayapply _ _        _        = return Nothing
+
+--
+-- Second Pass (Low Level)
+--
+
+-- | Assembles a Format 1 instruction.
+format1 :: Word8 -> Assembler [Word8]
+format1 w = do
+  advanceAddress 1
+  return [w]
+
+-- | Assembles a Format 2 instruction.
+format2 :: Word8 -> Word8 -> Word8 -> Assembler [Word8]
+format2 op rega regb = do
+  advanceAddress 2
+  return [op, shiftL rega 4 .|. regb]
+
+-- | Assembles a Format 3 instruction.
+format3 :: Word8 -> Bool -> Bool -> Bool -> Word32 -> Word32 -> Assembler [Word8]
+format3 op n i x curaddr memoff
+  | b || p = do
+    advanceAddress 3
+    return $ packBits $ prefix ++ take 12 (toBits disp)
+  | otherwise = format4 op n i x memoff
+  where
+    disp = curaddr - memoff
+    prefix = format34DRY op n i x b p False
+    b = disp >= 0 && disp <= 4095
+    p = disp >= -2048 && disp <= 2047
+
+-- | Assembles a Format 4 instruction.
+format4 :: Word8 -> Bool -> Bool -> Bool -> Integer -> Assembler [Word8]
+format4 op n i x addr = do
+  advanceAddress 4
+  packBits $ prefix ++ addr'
+  where
+    prefix = format34DRY op n i x False False True
+    addr' = take 20 $ toBits addr
+
+format34DRY :: Word8 -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> [Bool]
+format34DRY op n i x b p e = toBits (set (set op 0 i) 1 n) ++ [x, b, p, e]
+  where set v i True = setBit v i
+        set v i False = clearBit v i
 
 -- | Turns a data structure representing bits into a list of bits in bit endian order,
 -- ignoring bit ordering.
@@ -106,64 +259,4 @@ packBits = f []
         b = [bit' i v | v <- bits', i <- indeces]
     bit' i True = bit i
     bit' i False = zeroBits
-
-safeIdx :: Int -> [a] -> Maybe a
-safeIdx i xs
-  | length xs > i = Just $ xs !! i
-  | otherwise = Nothing
-
-lookupMnemonic :: String -> Maybe OpDesc
-lookupMnemonic m = find ((==) m . opdescMnemonic) operations
-
-simpleToByte :: Operand -> Maybe Word8
-simpleToByte (Operand (Right ident) OpSimple) = lookup ident registers
-simpleToByte (Operand (Left i) OpSimple) = Just $ fromIntegral i
-simpleToByte _ = Nothing
-
---
--- Symbol Table
---
-
-mkSymbolTable :: [Line] -> Maybe [(String, Word32)]
-mkSymbolTable = f 0 []
-  where f _ acc [] = acc
-        f addr acc (ln@(Line (Just l) _ _):ls) = case sizeofLine ln of
-          Just s -> f (addr + s) (acc + (l, addr)) ls
-          Nothing -> Nothing
-
--- TODO: implement me!!
-getStartAddress :: [(String, Word32)] -> [Line] -> Word32
-getStartAddress _ _ = 0
-
---
--- Formatting Functions (low-level assembly logic)
---
-
-format1 :: Word8 -> [Word8]
-format1 = pure
-
-format2 :: Word8 -> Word8 -> Word8 -> [Word8]
-format2 op rega regb = [op, shiftL rega 4 .|. regb]
-
--- TODO: implement calculating B and P
-format3 :: Word8 -> Bool -> Bool -> Bool -> Word32 -> Word32 -> [Word8]
-format3 op n i x curaddr memoff
- | b || p = packBits $ prefix ++ take 12 (toBits disp)
- | otherwise = format4 op n i x memoff
-  where
-    disp = curaddr - memoff
-    prefix = format34DRY op n i x b p False
-    b = disp >= 0 && disp <= 4095
-    p = disp >= -2048 && disp <= 2047
-
-format4 :: Word8 -> Bool -> Bool -> Bool -> Integer -> [Word8]
-format4 op n i x addr = packBits $ prefix ++ addr'
-  where
-    prefix = format34DRY op n i x False False True
-    addr' = take 20 $ toBits addr
-
-format34DRY :: Word8 -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> [Bool]
-format34DRY op n i x b p e = toBits (set (set op 0 i) 1 n) ++ [x, b, p, e]
-  where set v i True = setBit v i
-        set v i False = clearBit v i
 

@@ -9,14 +9,15 @@ where
 
 import AccumulatorT
 import Data.Functor
+import Data.List
 
-accum :: i -> AccumulatorT i i Identity () -> [i]
+accum :: i -> (i -> c) -> AccumulatorT i c Identity () -> [c]
 accum i acc = res
   where
     (_, res, _) = runIdentity $ evalAccumulatorT acc return (return i)
 
 registers :: [(String, Word8)]
-registers = accum ("", 0) $ do
+registers = accum ("", 0) id $ do
   register 0 "A"
   register 1 "X"
   register 2 "L"
@@ -41,8 +42,11 @@ data OpDesc = OpDesc {
   opdescFormats :: [Int]
 } deriving (Eq, Show)
 
+sortFormats :: OpDesc -> OpDesc
+sortFormats (OpDesc o m fs) = OpDesc o m (sort fs)
+
 operations :: [OpDesc]
-operations = accum (OpDesc 0x00 "" []) $ do
+operations = accum (OpDesc 0x00 "" []) sortFormats $ do
   op "ADD" $ do
     opcode 0x18
     format 3
