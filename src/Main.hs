@@ -4,6 +4,7 @@ import Common
 import Buffer
 import Parser
 import System.Environment
+import Foreign.Marshal.Array
 
 main :: IO ()
 main = do
@@ -26,7 +27,17 @@ main = do
             c _ = False
 
 showHex :: [Word8] -> String
-showHex = const ""
+showHex = mconcat . map toPair
+  where
+    toPair w = [f h, f l] 
+      where
+        f x
+          | x < 10 = chr $ ord '0' + x
+          | otherwise = chr $ ord 'A' + x
+        l = w .&. 0x0F
+        h = shiftR (w .&. 0xF0) 4
+  
 
 hPutBytes :: Handle -> [Word8] -> IO ()
-hPutBytes hdl bytes = return ()
+hPutBytes hdl bytes = withArray bytes (hPutBuf hdl)
+
