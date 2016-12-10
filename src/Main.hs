@@ -1,47 +1,32 @@
 module Main where
 
+import Common
 import Buffer
 import Parser
 import System.Environment
 
 main :: IO ()
 main = do
-  inname <- safeHead <$> getArgs
-  outname = (=<<) safeHead . safeTail <$> getArgs
-  out <- openFile outname
-  lines <- parseFile <$> readFile inname
-  print lines
-  -- buffers <- mapM assembleLine lines
-  -- mapM (hPutBuffer out) buffers
-  -- mapM freeBuffer buffers
+  inname <- fromMaybe "in.sic" . safeIdx 0 <$> getArgs
+  outname <- fromMaybe "out.exe" . safeIdx 1 <$> getArgs
+  srclines <- splitLines <$> readFile inname
+  let lines = mapM parseLine =<< mapM tokenizeLine srclines
+  maybe (failure inname) (success outname srclines) $ assemble lines
   where
-    parseFile = (=<<) mapM parseLine . mapM tokenizeLine . splitLines
-    safeHead [] = Nothing
-    safeHead (x:_) = Just x
-    safeTail [] = Nothing
-    safeTail (_:xs) = Just xs
-    splitLines = unfoldr f
-    f "" = Nothing
-    f xs = (fmap splitAt $ elemIndex '\n' xs') <*> stripNL xs
-      where stripNL [] = Nothing
-            stripNL ('\n':xs) = stripNL xs 
-            stripNL xs = Just xs
+    failure = putStrLn . (++) "failed to assemble "
+    success outname src asm = do
+      withFile outname $ flip hPutBytes (mconcat asm)
+      printer 0 src asm
+    printer addr (s:src) (a:asm) = do
+      putStrLn $ show addr ++ s ++ "\t" ++ showHex a
+      printer (addr + (length a)) src asm 
+    printer _ _ _ = return ()
+    splitLines = filter (not . c) . splitOn ['\n']
+      where c ('.':_) = True
+            c _ = False
 
--- Assembles each line to a buffer
-assemble :: [String] -> IO [Buffer]
-assemble lines = do
-  let lines = map tokenizeLine lines
-      syntax = mapM parseLine lines
-  buffers <- mapM assembleLine syntax
-  print syntax
-  return []
-  where
-    printlns [] _ = return ()
-    printlns _ [] = return ()
-    printlns (l:ls) (b:bs) = do
-      bhex <- showBufferHex b
-      putStrLn $ intercalate "\t" $ l ++ [bhex]
-      printlns ls bs
+showHex :: [Word8] -> String
+showHex = const ""
 
-buildSymbolTable :: 
-
+hPutBytes :: Handle -> [Word8] -> IO ()
+hPutBytes hdl bytes = return ()

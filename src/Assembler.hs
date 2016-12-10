@@ -10,6 +10,7 @@ module Assembler
 )
 where
 
+import Common
 import Parser
 import Definitions
 import Data.Word
@@ -22,7 +23,6 @@ import Data.Foldable
 import Data.Monoid
 import Control.Monad
 import Control.Monad.State.Lazy
-import Control.Monad.Trans.Maybe
 
 assemble :: [Line] -> Maybe [[Word8]]
 assemble ls = runAssembler 0 mempty $ do
@@ -106,11 +106,13 @@ lineFormat (Line _ (Mnemonic _ extended) oprs) = f =<< lookupMnemonic m
     valid []     1 = return True
     valid (x:xs) 2 = return $ all $ map (isJust . simpleToByte) (x:xs)
     valid (Operand (Left _) OpImmediate:_) 3 = False
-    valid (x:_)  3 = do
-      addrc <- address
-      addrx <- fromMaybe addrc <$> getAddr x
-      let disp = addrx - addrc
-      return $ not $ disp < -2048 || disp > 4095
+    valid (x:_)  3
+      | extended = return False
+      | otherwise = do
+        addrc <- address
+        addrx <- fromMaybe addrc <$> getAddr x
+        let disp = addrx - addrc
+        return $ not $ disp < -2048 || disp > 4095
     valid (_:_)  4 = return True
     valid _      _ = return False
 
@@ -171,12 +173,6 @@ getI a = isType OpImmediate a || isType OpSimple a
 getN :: Operand -> Bool
 getN a = isType OpIndirect a || isType OpSimple a
 
--- | Safely gets the @i@th element in the list @xs@.
-safeIdx :: Int -> [a] -> Maybe a
-safeIdx i xs
-  | length xs > i = Just $ xs !! i
-  | otherwise = Nothing
-
 -- | Looks up an opcode from the 'Descriptions' module.
 lookupMnemonic :: String -> Maybe OpDesc
 lookupMnemonic m = find ((==) m . opdescMnemonic) operations
@@ -186,14 +182,6 @@ simpleToByte :: Operand -> Maybe Word8
 simpleToByte (Operand (Right ident) OpSimple) = lookup ident registers
 simpleToByte (Operand (Left i) OpSimple) = Just $ fromIntegral i
 simpleToByte _ = Nothing
-
--- | Monadic version of 'find'.
-findM :: (Monad m, Foldable f) => (a -> m (Maybe b)) -> f a -> m (Maybe b)
-findM f = getFirstM . foldMap (FirstM . f)
-
-mayapply :: (Monad m) => (a -> b -> m c) -> Maybe a -> Maybe b -> m (Maybe c)
-mayapply f (Just a) (Just b) = Just <$> f a b
-mayapply _ _        _        = return Nothing
 
 --
 -- Second Pass (Low Level)
