@@ -1,3 +1,7 @@
+	START	100
 	COMP	#0
 	LDA	#3
+	BYTE	C'asdf'
 	COMPR	A,S
+	RESW	1
+	COMPR	X,A

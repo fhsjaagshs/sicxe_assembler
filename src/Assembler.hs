@@ -1,14 +1,8 @@
 module Assembler
 (
-  assemble,
-  packBits,
-  toBits,
-  fillTo,
-  bigendianizeAddr
+  assemble
 )
 where
-
-import Debug.Trace
 
 import Common
 import Parser
@@ -158,7 +152,7 @@ assembleLine l@(Line _ (Mnemonic m _) oprs) = do
     mkdirec "RESB" [Operand (Left n) OpSimple] = Just <$> resb (fromIntegral n)
     mkdirec "RESW" [Operand (Left n) OpSimple] = Just <$> resw (fromIntegral n)
     mkdirec "START" [Operand (Left n) OpSimple] = Just <$> start (fromIntegral n)
-    mkdirec _ _ = return Nothing
+    mkdirec a o = return $ Nothing
 
 -- | Calculates the absolute address contained in an operand.
 getAddr :: Operand -> Assembler (Maybe Address)
