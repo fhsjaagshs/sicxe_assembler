@@ -34,14 +34,14 @@ bytesToInteger = f 0 0
   where f acc _ [] = acc
         f acc i (b:bs) = f (acc + ((fromIntegral b) * (256 ^ i))) (i + 1) bs
 
--- TODO: implement me?
 -- | Dual to 'bytesToInteger'.
 integerToBytes :: Integer -> [Word8]
-integerToBytes = const []
--- integerToBytes i = f (abs i) 0 []
---  where f 0 _ bs = bs
---        f v i bs = f (v + (2 ^ (8 * i))) (i + 1) bs
---          where b = 
+integerToBytes = unfoldr popByte
+  where
+    popByte :: Integer -> Maybe (Word8, Integer)
+    popByte 0 = Nothing
+    popByte i = Just ((fromIntegral a), b)
+      where (b, a) = quotRem i 256
 
 -- | Safely gets the @i@th element in the list @xs@.
 safeIdx :: Int -> [a] -> Maybe a
