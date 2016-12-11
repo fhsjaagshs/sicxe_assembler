@@ -10,10 +10,10 @@ import System.IO
 
 main :: IO ()
 main = do
-  inname <- fromMaybe "in.sic" . safeIdx 0 <$> getArgs
-  outname <- fromMaybe "out.exe" . safeIdx 1 <$> getArgs
+  inname <- fromMaybe "main.asm" . safeIdx 0 <$> getArgs
   srclines <- splitLines <$> readFile inname
   let lines = mapM parseLine $ map tokenizeLine srclines
+      outname = takeWhile (/= '.') inname ++ ".exe"
   maybe (failure inname) (success outname srclines) $ assemble =<< lines
   where
     failure n = putStrLn $ "failed to assemble " ++ n
