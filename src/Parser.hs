@@ -12,8 +12,8 @@ module Parser
 (
   Line(..),
   Operand(..),
-  Register(..),
-  Immediate(..),
+  OperandType(..),
+  Mnemonic(..),
   tokenizeLine,
   parseLine
 )
@@ -23,6 +23,7 @@ import Common
 
 import Data.Maybe
 import Text.Read
+import Data.List
 import Data.Word
 import Data.Bits
 import Data.Char
@@ -54,8 +55,8 @@ tokenizeLine str = splitOn [' ', '\t'] str
 
 -- | Parses a line of SIC/XE Assembly given a list of tokens.
 parseLine :: [Token] -> Maybe Line
-parseLine (l:n:o:_) = Just $ Line (nonnull l) <$> (parseMnemonic n) <*> parseOperands o
-parseLine (l:n:_) = Just $ Line (nonnull l) (parseMnemonic n) []
+parseLine (l:n:o:_) = Line (nonnull l) <$> parseMnemonic n <*> parseOperands o
+parseLine (l:n:_) = Line (nonnull l) <$> parseMnemonic n <*> pure []
 parseLine _ = Nothing
 
 --
@@ -93,11 +94,11 @@ parseOperands = mapM parseOperand . splitOn [',']
 
 -- | Parse a single operand.
 parseOperand :: Token -> Maybe Operand
-parseOperand ('#':xs)      = (flip Operand OpImmediate) <$> (eitherOr numeric alphaNumeric)
-parseOperand ('@':xs)      = (flip Operand OpIndirect) <$> (eitherOr numeric alphaNumeric)
-parseOperand ('C':'\'':xs) = flip Operand OpImmediate . bytesToInteger . map (fromIntegral . ord) <$> quoted ('\'':xs)
-parseOperand ('X':'\'':xs) = flip Operand OpImmediate . bytesToInteger . hexstring <$> quoted ('\'':xs)
-parseOperand xs            = (flip Operand OpSimple) <$> (eitherOr numeric alphaNumeric) OpSimple
+parseOperand ('#':xs)      = (flip Operand OpImmediate) <$> (eitherOr numeric alphaNumeric xs)
+parseOperand ('@':xs)      = (flip Operand OpIndirect) <$> (eitherOr numeric alphaNumeric xs)
+parseOperand ('C':'\'':xs) = flip Operand OpImmediate . Left . bytesToInteger . map (fromIntegral . ord) <$> quoted ('\'':xs)
+parseOperand ('X':'\'':xs) = flip Operand OpImmediate . Left . bytesToInteger <$> (quoted ('\'':xs) >>= hexstring)
+parseOperand xs            = (flip Operand OpSimple) <$> (eitherOr numeric alphaNumeric xs)
 
 --
 -- Predicates
@@ -108,10 +109,7 @@ isNumeric c = ord c >= ord '0' && ord c <= ord '9'
 
 isAlphabetic :: Char -> Bool
 isAlphabetic c = c' >= ord 'A' && c' <= ord 'Z'
-  where c' = ord $ upcase c
-
-isAlphaNum :: Char -> Bool
-isAlphaNum c = isNumeric c || isAlphabetic c
+  where c' = ord $ toUpper c
 
 --
 -- General parsers
@@ -121,7 +119,7 @@ isAlphaNum c = isNumeric c || isAlphabetic c
 -- the first char is a '\'', as is the last.
 -- Excludes the quotes in the result.
 quoted :: Token -> Maybe String
-quoted = f =<< nonnull
+quoted = (=<<) f . nonnull
   where f ('\'':xs)
           | after == "'" = Just before
           | otherwise = Nothing 
@@ -133,8 +131,8 @@ nonnull "" = Nothing
 nonnull str = Just str
 
 -- | Parses numeric strings.
-numeric :: Token -> Maybe String
-numeric = predicated isNumeric
+numeric :: Token -> Maybe Integer
+numeric = (=<<) readMaybe . predicated isNumeric
 
 -- | Parses alphanumeric strings.
 alphaNumeric :: Token -> Maybe String
@@ -144,7 +142,7 @@ alphaNumeric = predicated isAlphaNum
 -- 1. For all characters c in the result, p(c(sub)i) = True
 -- 2. The length of the result must equal the length of the input token.
 predicated :: (Char -> Bool) -> Token -> Maybe String
-predicated p str = nonnull =<< unfoldr (mkf p) str
+predicated p str = nonnull =<< sequence (unfoldr (mkf p) str)
   where mkf _ [] = Nothing
         mkf pred (x:xs)
           | pred x = Just (Just x, xs) 

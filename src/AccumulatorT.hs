@@ -74,7 +74,7 @@ complete :: (Monad m) => AccumulatorT s i m ()
 complete = AccumulatorT $ \fin fi st i -> do
   incomp <- fi
   accum <- fin i
-  return ((),push st accum,incomp)
+  return ((),st ++ [accum],incomp)
 
 -- |Apply a function to the incomplete state.
 incomplete :: (Monad m) => (i -> m i) -> AccumulatorT s i m ()

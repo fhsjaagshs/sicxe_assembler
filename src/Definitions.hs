@@ -1,23 +1,24 @@
 module Definitions
 (
-  OpDesc(..)
+  OpDesc(..),
   registers,
   indexingRegister,
-  operations,
+  operations
 )
 where
 
 import AccumulatorT
-import Data.Functor
+import Data.Functor.Identity
 import Data.List
+import Data.Word
 
-accum :: i -> (i -> c) -> AccumulatorT i c Identity () -> [c]
-accum i acc = res
+accum :: i -> (i -> c) -> AccumulatorT c i Identity () -> [c]
+accum i f acc = res
   where
-    (_, res, _) = runIdentity $ evalAccumulatorT acc return (return i)
+    (_, res, _) = runIdentity $ evalAccumulatorT acc (return . f) (return i)
 
 registers :: [(String, Word8)]
-registers = accum ("", 0) id $ do
+registers  = accum ("", 0) id $ do
   register 0 "A"
   register 1 "X"
   register 2 "L"
@@ -227,7 +228,7 @@ operations = accum (OpDesc 0x00 "" []) sortFormats $ do
     format 4
   where
     op m act = mnemonic m >> act >> complete
-    opcode o = incomplete $ \OpDesc _ m fs -> OpDesc 0 m fs
-    mnemonic m = incomplete $ \OpDesc o _ fs -> OpDesc o m fs
-    format f = incomplete $ \OpDesc o m fs -> OpDesc o m (fs ++ [f])
+    opcode o = incomplete $ \(OpDesc _ m fs) -> return $ OpDesc 0 m fs
+    mnemonic m = incomplete $ \(OpDesc o _ fs) -> return $ OpDesc o m fs
+    format f = incomplete $ \(OpDesc o m fs) -> return $ OpDesc o m (fs ++ [f])
 
