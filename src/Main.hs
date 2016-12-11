@@ -15,6 +15,7 @@ main = do
   srclines <- splitLines <$> readFile inname
   print srclines
   let lines = mapM parseLine $ map tokenizeLine srclines
+  print lines
   maybe (failure inname) (success outname srclines) $ assemble =<< lines
   where
     failure n = putStrLn $ "failed to assemble " ++ n

@@ -59,26 +59,14 @@ mayapply _ _        _        = return Nothing
 -- Splits a string on any of the following chars,
 -- respecting single quotes.
 splitOn :: [Char] -> String -> [String]
-splitOn cs = unfoldr uf
+splitOn cs = unfoldr f
   where
-    -- function for use with unfoldr that unfolds a list of tuples from a string
-    uf str
-      | length str == 0 = Nothing
-      | otherwise = Just $ getok str
-
-    -- parses a single token, respecting single quotes
-    getok [] = ("", "")
-    getok (x:xs)
-      | isQuote x = let (inquotes, xs') = span (not . isQuote) xs
-                        (tokpart, remainder) = getok $ drop 1 xs'
-                    in (inquotes ++ tokpart ++ "'", drop 1 remainder)
-      | isSplitC x = ("", xs)
-      | otherwise = let (tokpart, remainder) = span (\c -> not $ isSplitC c || isQuote c) (x:xs)
-                        (tokpart2, remainder') = getok remainder
-                    in (tokpart ++ tokpart2, remainder')
-    isQuote '\'' = True
-    isQuote _ = False 
-    isSplitC c = c `elem` cs
+    f [] = Nothing
+    f ('\'':xs) = Just (('\'':x') ++ take 1 xs' , drop 1 xs')
+      where (x', xs') = span (/= '\'') xs
+    f xs = Just (v, dropWhile isSplitter vs)
+      where (v, vs) = span (not . isSplitter) xs
+    isSplitter c = c `elem` cs
 
 showHex :: [Word8] -> String
 showHex = mconcat . map toPair
