@@ -1,6 +1,7 @@
 module Common
 (
   bytesToInteger,
+  integerToBytes,
   safeIdx,
   findM,
   mayapply,
@@ -31,10 +32,16 @@ import System.IO
 bytesToInteger :: [Word8] -> Integer
 bytesToInteger = f 0 0
   where f acc _ [] = acc
-        f acc i (b:bs) = f (acc + (2 ^ (8 * i))) (i + i) bs -- By using arithmetic, we skirt endianness woes.
+        f acc i (b:bs) = f (acc + ((fromIntegral b) * (256 ^ i))) (i + 1) bs
 
 -- TODO: implement me?
--- integerToBytes :: Integer -> [Word8]
+-- | Dual to 'bytesToInteger'.
+integerToBytes :: Integer -> [Word8]
+integerToBytes = const []
+-- integerToBytes i = f (abs i) 0 []
+--  where f 0 _ bs = bs
+--        f v i bs = f (v + (2 ^ (8 * i))) (i + 1) bs
+--          where b = 
 
 -- | Safely gets the @i@th element in the list @xs@.
 safeIdx :: Int -> [a] -> Maybe a

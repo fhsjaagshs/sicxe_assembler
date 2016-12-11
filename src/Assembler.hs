@@ -122,7 +122,16 @@ lineFormat (Line _ (Mnemonic m extended) oprs) = maybe (return Nothing) f $ look
 -- | Determine the size of a line (directive or instruction) of SIC/XE
 -- assembler code without accessing the symbol table or assembling code.
 sizeofLine :: Line -> Assembler (Maybe Word32)
-sizeofLine = fmap (fmap fromIntegral) . lineFormat -- TODO: implement sizeofLine for directives
+sizeofLine l@(Line _ (Mnemonic m _) oprs) = do
+  lf <- lineFormat l
+  return $ lf <|>  ds m oprs
+  where
+    ds "BYTE" [Operand (Left v) OpImmediate] = Just $ fromIntegral $ length $ integerToBytes v
+    ds "WORD" [Operand (Left v) OpSimple] = Just 3
+    ds "RESB" [Operand (Left n) OpSimple] = Just $ fromIntegral n
+    ds "RESW" [Operand (Left n) OpSimple] = Just $ fromIntegral 3 * n
+    ds "START" [Operand (Left n) OpSimple] = Just $ fromIntegral n
+    ds _ _ = return Nothing
 
 -- | Assembles a line of SIC/XE ASM as parsed by Parser.
 -- Returns a list of bytes in Big Endian order and the next address.
@@ -141,11 +150,12 @@ assembleLine l@(Line _ (Mnemonic m _) oprs) = do
     mkinstr opc 3 [a]    = getAddr a >>= mayapply (format3 (reqAbs a) opc (getN a) (getI a)) (return False)
     mkinstr opc 4 [a, b] = getAddr a >>= mayapply (format4 opc (getN a) (getI a)) (return $ getX a b)
     mkinstr opc 4 [a]    = getAddr a >>= mayapply (format4 opc (getN a) (getI a)) (return False)
-
-    -- TODO: IMPLEMENT DIRECTIVES
-    --       1. ones that assemble
-    --       2. ones that don't assemble
-    mkdirec str oprs = return Nothing
+    mkdirec "BYTE" [Operand (Left v) OpImmediate] = byte v
+    mkdirec "WORD" [Operand (Left v) OpSimple] = word v
+    mkdirec "RESB" [Operand (Left n) OpSimple] = resb n
+    mkdirec "RESW" [Operand (Left n) OpSimple] = resw n
+    mkdirec "START" [Operand (Left n) OpSimple] = start n
+    mkdirec _ _ = return Nothing
 
 -- | Calculates the absolute address contained in an operand.
 getAddr :: Operand -> Assembler (Maybe Address)
@@ -194,6 +204,33 @@ simpleToByte _ = Nothing
 --
 -- Second Pass (Low Level)
 --
+
+-- | Assembles a 24-bit word constant
+word :: Integer -> Assembler [Word8]
+word i = do
+  advanceAddress 3
+  return $ packBits $ toBits ((fromIntegral i) :: Word32)
+
+-- | Assembles a binary constant
+byte :: Integer -> Assembler [Word8]
+byte bs = do
+  advanceAddress $ length bs'
+  return bs'
+  where bs' = integerToBytes bs
+
+-- | Reserve bytes of space.
+resb :: Word32 -> Assembler [Word8]
+resb i = do
+  advanceAddress i
+  return $ replicate i 0x0
+
+-- | Reserve words of space.
+resw :: Word32 -> Assembler [Word8]
+resw = resb . (* 3)
+
+-- | Start directive.
+start :: Word32 -> Assembler [Word8]
+start = resb
 
 -- | Assembles a Format 1 instruction.
 format1 :: Word8 -> Assembler [Word8]
