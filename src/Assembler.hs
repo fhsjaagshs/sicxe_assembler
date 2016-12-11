@@ -4,7 +4,9 @@
 
 module Assembler
 (
-  assemble
+  assemble,
+  packBits,
+  toBits
 )
 where
 
@@ -13,6 +15,7 @@ import Parser
 import Definitions
 import Data.Word
 import Data.Bits
+import Data.Bool
 
 import Data.HashMap.Lazy (HashMap)
 import qualified Data.HashMap.Lazy as HM
@@ -105,13 +108,13 @@ lineFormat (Line _ (Mnemonic m extended) oprs) = maybe (return Nothing) f $ look
     -- instruction format(s) dictated by the mnemonic. 
     valid []     1 = return True
     valid (x:xs) 2 = return $ and $ map (isJust . simpleToByte) (x:xs)
-    valid (Operand (Left _) OpImmediate:_) 3 = return False
     valid (x:_)  3
       | extended = return False
+      | reqAbs x = return True
       | otherwise = do
         addrc <- address
         addrx <- fromMaybe addrc <$> getAddr x
-        let disp = addrx - addrc
+        let disp = ((fromIntegral addrx) - (fromIntegral addrc)) :: Integer
         return $ not $ disp < -2048 || disp > 4095
     valid (_:_)  4 = return True
     valid _      _ = return False
@@ -134,8 +137,8 @@ assembleLine l@(Line _ (Mnemonic m _) oprs) = do
     mkinstr opc 1 _      = Just <$> format1 opc
     mkinstr opc 2 [a]    = mayapply (format2 opc) (simpleToByte a) (Just 0)
     mkinstr opc 2 [a, b] = mayapply (format2 opc) (simpleToByte a) (simpleToByte b)
-    mkinstr opc 3 [a, b] = getAddr a >>= mayapply (format3 opc (getN a) (getI a)) (return $ getX a b)
-    mkinstr opc 3 [a]    = getAddr a >>= mayapply (format3 opc (getN a) (getI a)) (return False)
+    mkinstr opc 3 [a, b] = getAddr a >>= mayapply (format3 (reqAbs a) opc (getN a) (getI a)) (return $ getX a b)
+    mkinstr opc 3 [a]    = getAddr a >>= mayapply (format3 (reqAbs a) opc (getN a) (getI a)) (return False)
     mkinstr opc 4 [a, b] = getAddr a >>= mayapply (format4 opc (getN a) (getI a)) (return $ getX a b)
     mkinstr opc 4 [a]    = getAddr a >>= mayapply (format4 opc (getN a) (getI a)) (return False)
 
@@ -157,6 +160,10 @@ getAddr (Operand (Right s) _) = getSymbol s
 isIndexingReg :: Operand -> Bool
 isIndexingReg (Operand (Right v) OpSimple) = v == fst indexingRegister
 isIndexingReg _ = False
+
+reqAbs :: Operand -> Bool
+reqAbs (Operand (Left _) OpImmediate) = True
+reqAbs _                              = False
 
 -- | Determines if @operand@ is a given 'OperandType'
 isType :: OperandType -> Operand -> Bool
@@ -201,8 +208,8 @@ format2 op rega regb = do
   return [op, shiftL rega 4 .|. regb]
 
 -- | Assembles a Format 3 instruction.
-format3 :: Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
-format3 op n i x memoff = do
+format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
+format3 absolute op n i x memoff = do
   curaddr <- address
   let disp = ((fromIntegral curaddr) - (fromIntegral memoff)) :: Int
       b = disp >= 0 && disp <= 4095
@@ -211,7 +218,8 @@ format3 op n i x memoff = do
   if b || p
     then do
       advanceAddress 3
-      return $ packBits $ prefix ++ take 12 (toBits disp)
+      let disp' = bool disp (fromIntegral memoff) absolute
+      return $ packBits $ prefix ++ take 12 (toBits disp')
     else format4 op n i x memoff
 
 -- | Assembles a Format 4 instruction.
@@ -249,7 +257,7 @@ packBits = f []
         (bits, xs') = splitAt 8 xs
         bits' = bits ++ replicate (max (8 - length bits) 0) False
         indeces = [7,6,5,4,3,2,1,0]
-        b = foldl (.|.) zeroBits [bit' i v | v <- bits', i <- indeces]
+        b = foldl (+) 0 $ map (uncurry bit') $ zipWith (,) indeces bits'
     bit' i True = bit i
     bit' i False = zeroBits
 

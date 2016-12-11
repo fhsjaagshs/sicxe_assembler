@@ -30,11 +30,7 @@ import Data.Char
 import Control.Applicative
 
 -- | Represents a line of SIC/XE assembly.
-data Line = Line {
-  lineLabel :: (Maybe String),
-  lineMnemonic :: Mnemonic,
-  lineOperands :: [Operand]
-} deriving (Eq, Show)
+data Line = Line (Maybe String) Mnemonic [Operand] deriving (Eq, Show)
 
 --
 -- Tokenizer
@@ -64,10 +60,7 @@ parseLine _ = Nothing
 --
 
 -- | Represents a mnemonic in SIC/XE.
-data Mnemonic = Mnemonic {
-  mnemonic :: String,
-  mnemonicExtended :: Bool
-} deriving (Eq, Show)
+data Mnemonic = Mnemonic String Bool deriving (Eq, Show)
 
 -- | Parses a mnemonic from a token.
 parseMnemonic :: Token -> Maybe Mnemonic
@@ -83,10 +76,7 @@ parseMnemonic = fmap f . nonnull
 data OperandType = OpSimple | OpIndirect | OpImmediate deriving (Eq, Show)
 
 -- | An operand to a SIC/XE instruction.
-data Operand = Operand {
-  operandValue :: (Either Integer String),
-  operandType :: OperandType
-} deriving (Eq, Show)
+data Operand = Operand (Either Integer String) OperandType deriving (Eq, Show)
 
 -- | Parse multiple operands in one token.
 parseOperands :: Token -> Maybe [Operand]

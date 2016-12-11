@@ -228,7 +228,7 @@ operations = accum (OpDesc 0x00 "" []) sortFormats $ do
     format 4
   where
     op m act = mnemonic m >> act >> complete
-    opcode o = incomplete $ \(OpDesc _ m fs) -> return $ OpDesc 0 m fs
+    opcode o = incomplete $ \(OpDesc _ m fs) -> return $ OpDesc o m fs
     mnemonic m = incomplete $ \(OpDesc o _ fs) -> return $ OpDesc o m fs
     format f = incomplete $ \(OpDesc o m fs) -> return $ OpDesc o m (fs ++ [f])
 
