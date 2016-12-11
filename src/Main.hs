@@ -13,10 +13,11 @@ main = do
   inname <- fromMaybe "in.sic" . safeIdx 0 <$> getArgs
   outname <- fromMaybe "out.exe" . safeIdx 1 <$> getArgs
   srclines <- splitLines <$> readFile inname
+  print srclines
   let lines = mapM parseLine $ map tokenizeLine srclines
   maybe (failure inname) (success outname srclines) $ assemble =<< lines
   where
-    failure = putStrLn . (++) "failed to assemble "
+    failure n = putStrLn $ "failed to assemble " ++ n
     success outname src asm = do
       withBinaryFile outname WriteMode ((flip hPutBytes) (mconcat asm))
       printer 0 src asm

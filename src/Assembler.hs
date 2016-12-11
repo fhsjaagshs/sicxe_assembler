@@ -204,7 +204,7 @@ format2 op rega regb = do
 format3 :: Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
 format3 op n i x memoff = do
   curaddr <- address
-  let disp = curaddr - memoff
+  let disp = ((fromIntegral curaddr) - (fromIntegral memoff)) :: Int
       b = disp >= 0 && disp <= 4095
       p = disp >= -2048 && disp <= 2047
       prefix = format34DRY op n i x b p False

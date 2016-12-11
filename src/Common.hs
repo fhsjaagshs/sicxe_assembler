@@ -70,11 +70,11 @@ splitOn cs = unfoldr uf
     getok [] = ("", "")
     getok (x:xs)
       | isQuote x = let (inquotes, xs') = span (not . isQuote) xs
-                        (tokpart, remainder) = getok xs'
+                        (tokpart, remainder) = getok $ drop 1 xs'
                     in (inquotes ++ tokpart ++ "'", drop 1 remainder)
       | isSplitC x = ("", xs)
       | otherwise = let (tokpart, remainder) = span (\c -> not $ isSplitC c || isQuote c) (x:xs)
-                        (tokpart2, remainder') = getok remainder'
+                        (tokpart2, remainder') = getok remainder
                     in (tokpart ++ tokpart2, remainder')
     isQuote '\'' = True
     isQuote _ = False 
@@ -87,7 +87,7 @@ showHex = mconcat . map toPair
       where
         f x
           | x < 10 = chr $ ord '0' + (fromIntegral x)
-          | otherwise = chr $ ord 'A' + (fromIntegral x)
+          | otherwise = chr $ ord 'A' + (fromIntegral $ x - 10)
         l = w .&. 0x0F
         h = shiftR (w .&. 0xF0) 4
   
