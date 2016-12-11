@@ -1,9 +1,3 @@
-{-|
-
--}
-
-{-# LANGUAGE CPP #-}
-
 module Assembler
 (
   assemble,
@@ -201,7 +195,6 @@ getI a = isType OpImmediate a || isType OpSimple a
 getN :: Operand -> Bool
 getN a = isType OpIndirect a || isType OpSimple a
 
--- reverse $ -
 lookupMnemonic :: String -> Maybe OpDesc
 lookupMnemonic m = find ((==) m . opdescMnemonic) operations
 
@@ -308,15 +301,6 @@ packBits = unfoldr f
             b = sum $ map (uncurry bit') $ zipWith (,) indeces $ fillTo 8 False bits
     bit' i True = bit i
     bit' i False = zeroBits
+    fillTo n d xs = xs' ++ replicate (n - length xs') d
+      where xs' = take n xs
 
-fillTo :: Int -> a -> [a] -> [a]
-fillTo n d xs = xs' ++ replicate (n - length xs') d
-  where xs' = take n xs
-
-
-bigendianizeAddr :: Address -> Address
-#ifdef WORDS_BIGENDIAN
-bigendianizeAddr = id
-#else
-bigendianizeAddr = byteSwap32
-#endif
