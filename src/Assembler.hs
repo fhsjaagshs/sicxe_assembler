@@ -2,13 +2,19 @@
 
 -}
 
+{-# LANGUAGE CPP #-}
+
 module Assembler
 (
   assemble,
   packBits,
-  toBits
+  toBits,
+  fillTo,
+  bigendianizeAddr
 )
 where
+
+import Debug.Trace
 
 import Common
 import Parser
@@ -16,6 +22,7 @@ import Definitions
 import Data.Word
 import Data.Bits
 import Data.Bool
+import Data.List
 
 import Data.HashMap.Lazy (HashMap)
 import qualified Data.HashMap.Lazy as HM
@@ -173,6 +180,7 @@ isIndexingReg :: Operand -> Bool
 isIndexingReg (Operand (Right v) OpSimple) = v == fst indexingRegister
 isIndexingReg _ = False
 
+-- | Determines if @operand@ should be absolute in format 3.
 reqAbs :: Operand -> Bool
 reqAbs (Operand (Left _) OpImmediate) = True
 reqAbs _                              = False
@@ -193,7 +201,7 @@ getI a = isType OpImmediate a || isType OpSimple a
 getN :: Operand -> Bool
 getN a = isType OpIndirect a || isType OpSimple a
 
--- | Looks up an opcode from the 'Descriptions' module.
+-- reverse $ -
 lookupMnemonic :: String -> Maybe OpDesc
 lookupMnemonic m = find ((==) m . opdescMnemonic) operations
 
@@ -211,7 +219,7 @@ simpleToByte _ = Nothing
 word :: Integer -> Assembler [Word8]
 word i = do
   advanceAddress 3
-  return $ packBits $ toBits ((fromIntegral i) :: Word32)
+  return $ packBits $ reverse $ toBits ((fromIntegral i) :: Word32)
 
 -- | Assembles a binary constant
 byte :: Integer -> Assembler [Word8]
@@ -251,14 +259,15 @@ format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
 format3 absolute op n i x memoff = do
   curaddr <- address
   let disp = ((fromIntegral curaddr) - (fromIntegral memoff)) :: Int
-      b = disp >= 0 && disp <= 4095
-      p = disp >= -2048 && disp <= 2047
+      disp' = bool disp (fromIntegral memoff) absolute
+      disp'' = ((fromIntegral disp') :: Word32)
+      b = not p && disp' >= 0 && disp' <= 4095 && not absolute
+      p = disp' >= -2048 && disp' <= 2047 && not absolute
       prefix = format34DRY op n i x b p False
-  if b || p
+  if b || p || absolute
     then do
       advanceAddress 3
-      let disp' = bool disp (fromIntegral memoff) absolute
-      return $ packBits $ prefix ++ take 12 (toBits disp')
+      return $ packBits $ prefix ++ (reverse $ take 12 $ toBits $ disp'')
     else format4 op n i x memoff
 
 -- | Assembles a Format 4 instruction.
@@ -268,35 +277,46 @@ format4 op n i x addr = do
   return $ packBits $ prefix ++ addr'
   where
     prefix = format34DRY op n i x False False True
-    addr' = take 20 $ toBits addr
+    addr' = reverse $ take 20 $ toBits addr
 
 format34DRY :: Word8 -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> [Bool]
-format34DRY op n i x b p e = toBits (set (set op 0 i) 1 n) ++ [x, b, p, e]
+format34DRY op n i x b p e = (reverse $ toBits (set (set op 0 i) 1 n)) ++ [x, b, p, e]
   where set v i True = setBit v i
         set v i False = clearBit v i
 
--- | Turns a data structure representing bits into a list of bits in bit endian order,
--- ignoring bit ordering.
+-- | Turns a @FiniteBits a@ into a list of bits in bit endian order, with no special ordering of bits.
 -- 'toBits' is dedicated to Fritz Wiedmer, my grandfather (~1925 to 2016). During
 -- his time at IBM, he designed Bubbles memory and ECC for keyboards. Fritz is the
 -- reason I became fascinated with computer science.
 toBits :: FiniteBits a => a -> [Bool]
-toBits x = map (testBit x . uncurry (+) . idx2bitbyte) [0..bitlen - 1]
-  where bitlen = finiteBitSize x
-        idx2bitbyte idx = (7 - mod idx 8, div idx 8)
+toBits x = map (testBit x) [0..finiteBitSize x - 1]
+--   where toBitIdx idx = uncurry (+) $ (7 - mod idx 8, div idx 8)
 
--- | Packs a list of bits into a list of bytes
--- in machine order
+orderBits :: [Bool] -> [Bool]
+orderBits [] = []
+orderBits bs = reverse b' ++ orderBits bs'
+  where (b', bs') = splitAt 8 bs
+
+-- | Packs a list of bits into a big endian list of bytes
 packBits :: [Bool] -> [Word8]
-packBits = f []
+packBits = unfoldr f
   where
-    f acc [] = acc
-    f acc xs = f (acc ++ [b]) xs'
-      where
-        (bits, xs') = splitAt 8 xs
-        bits' = bits ++ replicate (max (8 - length bits) 0) False
-        indeces = [7,6,5,4,3,2,1,0]
-        b = foldl (+) 0 $ map (uncurry bit') $ zipWith (,) indeces bits'
+    f [] = Nothing
+    f xs = Just (b, xs')
+      where (bits, xs') = splitAt 8 xs
+            indeces = [7,6,5,4,3,2,1,0]
+            b = sum $ map (uncurry bit') $ zipWith (,) indeces $ fillTo 8 False bits
     bit' i True = bit i
     bit' i False = zeroBits
 
+fillTo :: Int -> a -> [a] -> [a]
+fillTo n d xs = xs' ++ replicate (n - length xs') d
+  where xs' = take n xs
+
+
+bigendianizeAddr :: Address -> Address
+#ifdef WORDS_BIGENDIAN
+bigendianizeAddr = id
+#else
+bigendianizeAddr = byteSwap32
+#endif
