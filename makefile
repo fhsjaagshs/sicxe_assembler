@@ -4,4 +4,5 @@ all:
 	cp dist/build/assem/assem .
 
 clean:
+	rm -rf dist
 	rm assem
