@@ -128,6 +128,7 @@ sizeofLine l@(Line _ (Mnemonic m _) oprs) = do
     ds "RESB" [Operand (Left n) OpSimple] = Just $ fromIntegral n
     ds "RESW" [Operand (Left n) OpSimple] = Just $ 3 * (fromIntegral n)
     ds "START" [Operand (Left n) OpSimple] = Just $ fromIntegral n
+    ds "END" _ = Just 0
     ds _ _ = Nothing
 
 -- | Assembles a line of SIC/XE ASM as parsed by Parser.
@@ -152,6 +153,7 @@ assembleLine l@(Line _ (Mnemonic m _) oprs) = do
     mkdirec "RESB" [Operand (Left n) OpSimple] = Just <$> resb (fromIntegral n)
     mkdirec "RESW" [Operand (Left n) OpSimple] = Just <$> resw (fromIntegral n)
     mkdirec "START" [Operand (Left n) OpSimple] = Just <$> start (fromIntegral n)
+    mkdirec "END" _ = return $ Just []
     mkdirec a o = return $ Nothing
 
 -- | Calculates the absolute address contained in an operand.
