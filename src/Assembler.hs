@@ -27,9 +27,10 @@ import Data.Foldable
 import Data.Monoid
 import Control.Applicative
 import Control.Monad
+import Control.Monad.Except
 import Control.Monad.State.Strict
 
-assemble :: [Line] -> Maybe [[Word8]]
+assemble :: [Line] -> Result [[Word8]]
 assemble ls = runAssembler 0 mempty $ do
   firstPass ls
   resetAddress
@@ -70,27 +71,20 @@ setSymbol :: String -> Address -> Assembler ()
 setSymbol sym a = state $ \(addr, st) -> ((), (addr, HM.insert sym a st))
 
 -- | Gets a symbol from the symbol table
-getSymbol :: String -> Assembler (Maybe Address)
-getSymbol sym = HM.lookup sym <$> symbolTable
-
+getSymbol :: String -> Assembler (Result Address)
+getSymbol sym = fromM err . HM.lookup sym <$> symbolTable
+  where err = "symbol '" ++ sym ++ "' doesn't exist"
 --
 -- First Pass
 --
 
 -- | Does the first pass of assembly, finding all of
 -- the labels and recording them in the symtab.
-firstPass :: [Line] -> Assembler ()
-firstPass xs = f xs
-  where
-    f [] = return ()
-    f (l@(Line mlbl _ _):ls) = do
-      case mlbl of
-        Just lbl -> address >>= setSymbol lbl
-        Nothing -> return ()
-      ms <- sizeofLine l
-      case ms of
-        Just s -> advanceAddress s >> f ls
-        Nothing -> return ()
+firstPass :: [Line] -> Assembler (Result ())
+firstPass [] = return $ Right ()
+firstPass (l@(Line lbl _ _):ls) = do
+  applyResultA (\s -> setSymbol s =<< address) $ fromM "" lbl
+  sizeofLine l >>= applyResultA ((>> return ()) . (>> firstPass ls) . advanceAddress)
 
 --
 -- Second Pass (High Level)
@@ -98,25 +92,29 @@ firstPass xs = f xs
 
 -- | Does the second pass of assembly, assembling
 -- all of the lines of assembly code into object code 
-secondPass :: [Line] -> Assembler (Maybe [[Word8]])
-secondPass ls = sequence <$> mapM assembleLine ls
+secondPass :: [Line] -> Assembler (Result [[Word8]])
+secondPass = fmap sequence . mapM assembleLine
 
 -- | Determine the format of a line of SIC/XE assembler.
-lineFormat :: Line -> Assembler (Maybe Int)
-lineFormat (Line _ (Mnemonic m extended) oprs) = maybe (return Nothing) f $ lookupMnemonic m
+lineFormat :: Line -> Assembler (Result Int)
+lineFormat (Line _ (Mnemonic m extended) oprs) = either (return . Left) f $ lookupMnemonic m
   where
-    f = findM (valid oprs) . opdescFormats
+    f :: OpDesc -> Assembler (Result Int)
+    f = (>>= toRes) . findM (valid oprs) . opdescFormats
+    toRes mlf = do
+      a <- address
+      return $ fromM ("invalid line at address: " ++ show a) mlf
     -- | @valid@ is a predicate that validates
     -- the line's operands with regard to the
     -- instruction format(s) dictated by the mnemonic. 
     valid []     1 = return True
-    valid (x:xs) 2 = return $ and $ map (isJust . simpleToByte) (x:xs)
+    valid (x:xs) 2 = return $ and $ map (isType OpSimple) (x:xs)
     valid (x:_)  3
       | extended = return False
       | reqAbs x = return True
       | otherwise = do
         addrc <- address
-        addrx <- fromMaybe addrc <$> getAddr x
+        addrx <- either (const addrc) id <$> getAddr x
         let disp = (fromIntegral addrc) - (fromIntegral addrx)
         return $ disp >= -2048 || disp < 4096
     valid _      3 = return True
@@ -125,50 +123,52 @@ lineFormat (Line _ (Mnemonic m extended) oprs) = maybe (return Nothing) f $ look
 
 -- | Determine the size of a line (directive or instruction) of SIC/XE
 -- assembler code without accessing the symbol table or assembling code.
-sizeofLine :: Line -> Assembler (Maybe Word32)
+sizeofLine :: Line -> Assembler (Result Word32)
 sizeofLine l@(Line _ (Mnemonic m _) oprs) = do
   lf <- lineFormat l
   return $ (fromIntegral <$> lf) <|>  ds m oprs
   where
-    ds :: String -> [Operand] -> Maybe Word32
-    ds "BYTE" [Operand (Left v) OpImmediate] = Just $ fromIntegral $ length $ integerToBytes v
-    ds "WORD" [Operand (Left v) OpSimple] = Just 3
-    ds "RESB" [Operand (Left n) OpSimple] = Just $ fromIntegral n
-    ds "RESW" [Operand (Left n) OpSimple] = Just $ 3 * (fromIntegral n)
-    ds "START" [Operand (Left n) OpSimple] = Just $ fromIntegral n
-    ds "END" _ = Just 0
-    ds _ _ = Nothing
+    ds :: String -> [Operand] -> Result Word32
+    ds "BYTE" [Operand (Left v) OpImmediate] = Right $ fromIntegral $ length $ integerToBytes v
+    ds "WORD" [Operand (Left v) OpSimple] = Right 3
+    ds "RESB" [Operand (Left n) OpSimple] = Right $ fromIntegral n
+    ds "RESW" [Operand (Left n) OpSimple] = Right $ 3 * (fromIntegral n)
+    ds "START" [Operand (Left n) OpSimple] = Right $ fromIntegral n
+    ds "END" _ = Right 0
+    ds "BASE" _ = Right 0
+    ds mp _ = Left $ ('\'':mp) ++ "' is not a directive nor a mnemonic"
 
 -- | Assembles a line of SIC/XE ASM as parsed by Parser.
 -- Returns a list of bytes in Big Endian order and the next address.
-assembleLine :: Line -> Assembler (Maybe [Word8])
+assembleLine :: Line -> Assembler (Result [Word8])
 assembleLine l@(Line _ (Mnemonic m _) oprs) = do
   lf <- lineFormat l
   g $ (,) <$> lf <*> lookupMnemonic m
   where
-    g (Just (f, OpDesc opc _ _)) = mkinstr opc f oprs
-    g Nothing                    = mkdirec m oprs
-    mkinstr :: Word8 -> Int -> [Operand] -> Assembler (Maybe [Word8])
-    mkinstr opc 1 _      = Just <$> format1 opc
-    mkinstr opc 2 [a]    = mayapply (format2 opc) (simpleToByte a) (Just 0)
-    mkinstr opc 2 [a, b] = mayapply (format2 opc) (simpleToByte a) (simpleToByte b)
-    mkinstr opc 3 [a, b] = getAddr a >>= mayapply (format3 (reqAbs a) opc (getN a) (getI a)) (return $ getX a b)
-    mkinstr opc 3 [a]    = getAddr a >>= mayapply (format3 (reqAbs a) opc (getN a) (getI a)) (return False)
-    mkinstr opc 3 []     = Just <$> format3 True opc True True False 0
-    mkinstr opc 4 [a, b] = getAddr a >>= mayapply (format4 opc (getN a) (getI a)) (return $ getX a b)
-    mkinstr opc 4 [a]    = getAddr a >>= mayapply (format4 opc (getN a) (getI a)) (return False)
-    mkinstr opc 4 []     = Just <$> format4 opc True True False 0
-    mkdirec "BYTE" [Operand (Left v) OpImmediate] = Just <$> byte v
-    mkdirec "WORD" [Operand (Left v) OpSimple] = Just <$> word v
-    mkdirec "RESB" [Operand (Left n) OpSimple] = Just <$> resb (fromIntegral n)
-    mkdirec "RESW" [Operand (Left n) OpSimple] = Just <$> resw (fromIntegral n)
-    mkdirec "START" [Operand (Left n) OpSimple] = Just <$> start (fromIntegral n)
-    mkdirec "END" _ = return $ Just []
-    mkdirec a o = return $ Nothing
+    g (Right (f, OpDesc opc _ _)) = mkinstr opc f oprs
+    g (Left _)                    = mkdirec m oprs
+    mkinstr :: Word8 -> Int -> [Operand] -> Assembler (Result [Word8])
+    mkinstr opc 1 _      = Right <$> format1 opc
+    mkinstr opc 2 [a]    = applyResultA2 (format2 opc) (format2Operand a) (Right 0)
+    mkinstr opc 2 [a, b] = applyResultA2 (format2 opc) (format2Operand a) (format2Operand b)
+    mkinstr opc 3 [a, b] = getAddr a >>= applyResultA2 (format3 (reqAbs a) opc (getN a) (getI a)) (return $ getX a b)
+    mkinstr opc 3 [a]    = getAddr a >>= applyResultA2 (format3 (reqAbs a) opc (getN a) (getI a)) (return False)
+    mkinstr opc 3 []     = Right <$> format3 True opc True True False 0
+    mkinstr opc 4 [a, b] = getAddr a >>= applyResultA2 (format4 opc (getN a) (getI a)) (return $ getX a b)
+    mkinstr opc 4 [a]    = getAddr a >>= applyResultA2 (format4 opc (getN a) (getI a)) (return False)
+    mkinstr opc 4 []     = Right <$> format4 opc True True False 0
+    mkdirec "BYTE" [Operand (Left v) OpImmediate] = Right <$> byte v
+    mkdirec "WORD" [Operand (Left v) OpSimple] = Right <$> word v
+    mkdirec "RESB" [Operand (Left n) OpSimple] = Right <$> resb (fromIntegral n)
+    mkdirec "RESW" [Operand (Left n) OpSimple] = Right <$> resw (fromIntegral n)
+    mkdirec "START" [Operand (Left n) OpSimple] = Right <$> start (fromIntegral n)
+    mkdirec "END" _ = return $ Right []
+    mkdirec "BASE" _ = return $ Right []
+    mkdirec a o = return $ Left $ ('\'':a) ++ "' is not a directive."
 
 -- | Calculates the absolute address contained in an operand.
-getAddr :: Operand -> Assembler (Maybe Address)
-getAddr (Operand (Left s) _) = return $ Just $ fromIntegral s
+getAddr :: Operand -> Assembler (Result Address)
+getAddr (Operand (Left s) _) = return $ Right $ fromIntegral s
 getAddr (Operand (Right s) _) = getSymbol s
  
 --
@@ -213,14 +213,16 @@ isPCRelative v = v >= -2048 && v < 2048
 isBaseRelative :: (Ord a, Num a) => a -> Bool
 isBaseRelative v = v >= 0 && v < 4096
 
-lookupMnemonic :: String -> Maybe OpDesc
-lookupMnemonic m = find ((==) m . opdescMnemonic) operations
+lookupMnemonic :: String -> Result OpDesc
+lookupMnemonic m = fromM ("invalid mnemonic: " ++ m) $ find ((==) m . opdescMnemonic) operations
+
+lookupRegister :: String -> Result Word8
+lookupRegister r = fromM ("register doesn't exist: " ++ r) $ lookup r registers
 
 -- | Turns an operand into either a register code or its integral value.
-simpleToByte :: Operand -> Maybe Word8
-simpleToByte (Operand (Right ident) OpSimple) = lookup ident registers
-simpleToByte (Operand (Left i) OpSimple) = Just $ fromIntegral i
-simpleToByte _ = Nothing
+format2Operand :: Operand -> Result Word8
+format2Operand (Operand v OpSimple) = either (Right .fromIntegral) lookupRegister v
+format2Operand (Operand v _) = Left $ "Operand '" ++ either show id v ++ "' is not compatible with format 2 instructions."
 
 --
 -- Second Pass (Low Level)
@@ -241,9 +243,7 @@ byte bs = do
 
 -- | Reserve bytes of space.
 resb :: Word32 -> Assembler [Word8]
-resb i = do
-  advanceAddress i
-  return $ replicate (fromIntegral i) 0x0
+resb i = replicate (fromIntegral i) 0x0 <$ advanceAddress i
 
 -- | Reserve words of space.
 resw :: Word32 -> Assembler [Word8]
@@ -255,15 +255,11 @@ start = resb
 
 -- | Assembles a Format 1 instruction.
 format1 :: Word8 -> Assembler [Word8]
-format1 w = do
-  advanceAddress 1
-  return [w]
+format1 w = [w] <$ advanceAddress 1
 
 -- | Assembles a Format 2 instruction.
 format2 :: Word8 -> Word8 -> Word8 -> Assembler [Word8]
-format2 op rega regb = do
-  advanceAddress 2
-  return [op, shiftL rega 4 .|. regb]
+format2 op a b = [op, shiftL a 4 .|. b] <$ advanceAddress 2
 
 -- | Assembles a Format 3 instruction.
 format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
@@ -271,16 +267,12 @@ format3 absolute op n i x memoff = do
   addr <- address
   let (b, p) = getBP addr memoff absolute 
   if b || p || absolute
-    then do
-      advanceAddress 3 
-      return $ getBytes b p addr
+    then getBytes b p addr <$ advanceAddress 3
     else format4 op n i x memoff
   where
-    getBytes b p addr = packBits $ prefix ++ dispBits 
-      where
-        disp = bool (calcDisp addr memoff) memoff absolute
-        prefix = format34DRY op n i x b p False
-        dispBits = reverse $ take 12 $ toBits disp
+    getBytes b p addr = packBits $ (++) prefix $ toWordN 12 disp
+      where disp = bool (calcDisp addr memoff) memoff absolute
+            prefix = format34DRY op n i x b p False
     getBP _ off True = (False, False)
     getBP addr off False = (b, p)
       where b = not p && (isBaseRelative $ calcDisp addr off)
@@ -288,16 +280,19 @@ format3 absolute op n i x memoff = do
 
 -- | Assembles a Format 4 instruction
 format4 :: Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
-format4 op n i x addr = do
-  advanceAddress 4
-  return $ packBits $ prefix ++ addrBits
-  where
-    prefix = format34DRY op n i x False False True
-    addrBits = reverse $ take 20 $ toBits addr
+format4 op n i x addr = packBits (prefix ++ toWordN 20 addr) <$ advanceAddress 4
+  where prefix = format34DRY op n i x False False True
 
 format34DRY :: Word8 -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> [Bool]
-format34DRY op n i x b p e = op' ++ [n, i, x, b, p, e]
-  where op' = take 6 $ reverse $ toBits op
+format34DRY op n i x b p e = toWordNEnd 6 op ++ [n, i, x, b, p, e]
+
+-- | Turns a FiniteBits into a Big Endian WordN, truncating most -> least sig
+toWordN :: FiniteBits a => Int -> a -> [Bool]
+toWordN n = reverse . take n . toBits
+
+-- | Turns a FiniteBits into a Big Endian WordN, truncating least -> most sig
+toWordNEnd :: FiniteBits a => Int -> a -> [Bool]
+toWordNEnd n = take n . reverse . toBits
 
 -- | Turns a @FiniteBits a@ into a list of bits in bit endian order, with no special ordering of bits.
 -- 'toBits' is dedicated to Fritz Wiedmer, my grandfather (~1925 to 2016). During
@@ -305,12 +300,6 @@ format34DRY op n i x b p e = op' ++ [n, i, x, b, p, e]
 -- reason I became fascinated with computer science.
 toBits :: FiniteBits a => a -> [Bool]
 toBits x = map (testBit x) [0..finiteBitSize x - 1]
---   where toBitIdx idx = uncurry (+) $ (7 - mod idx 8, div idx 8)
-
-orderBits :: [Bool] -> [Bool]
-orderBits [] = []
-orderBits bs = reverse b' ++ orderBits bs'
-  where (b', bs') = splitAt 8 bs
 
 -- | Packs a list of bits into a big endian list of bytes
 packBits :: [Bool] -> [Word8]

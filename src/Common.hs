@@ -5,11 +5,14 @@ module Common
   integerToBytes,
   safeIdx,
   findM,
-  mayapply,
+  bindResultM,
+  applyResultA,
+  applyResultA2,
   splitOn,
   showHex,
   hPutBytes,
-  toM
+  toM,
+  fromM
 )
 where
 
@@ -17,6 +20,7 @@ import Data.Bits
 import Data.Word
 import Data.Char
 import Data.Maybe
+import Data.Either
 import Data.List
 
 import Data.Foldable
@@ -53,9 +57,13 @@ safeIdx i xs
   | length xs > i = Just $ xs !! i
   | otherwise = Nothing
 
+-- | Turns an 'Either l r' into a 'Maybe r'. Loses left value.
 toM :: Either l r -> Maybe r
-toM (Left _) = Nothing
-toM (Right r) = Just r
+toM = either (const Nothing) Just
+
+-- | Turns a 'Maybe r' into an either, providing @l@ on 'Nothing'.
+fromM :: l -> Maybe r -> Either l r
+fromM l = maybe (Left l) Right
 
 -- | Monadic version of 'find'.
 findM :: (Monad m, Foldable t) => (a -> m Bool) -> t a -> m (Maybe a)
@@ -65,11 +73,19 @@ findM f = foldlM findf Nothing
           return $ if b then Just a else Nothing
         findf (Just a) _ = return $ Just a
 
--- | Apply a binary monadic function over two 'Maybe' values,
--- returning a monadic maybe value.
-mayapply :: (Monad m) => (a -> b -> m c) -> Maybe a -> Maybe b -> m (Maybe c)
-mayapply f (Just a) (Just b) = Just <$> f a b
-mayapply _ _        _        = return Nothing
+-- | Apply a binary monadic function over two results.
+applyResultA2 :: (Applicative m) => (a -> b -> m c) -> Result a -> Result b -> m (Result c)
+applyResultA2 f (Right a)  (Right b) = Right <$> f a b
+applyResultA2 _ (Left err) _         = pure $ Left err
+applyResultA2 _ _          (Left err) = pure $ Left err
+
+-- | Apply a unary monadic function over a result.
+applyResultA :: (Applicative m) => (a -> m b) -> Result a -> m (Result b)
+applyResultA f (Right v)  = Right <$> f v
+applyResultA _ (Left err) = pure $ Left err
+
+bindResultM :: (Monad m) => (a -> m b) -> m (Result a) -> m (Result b)
+bindResultM f v = v >>= either (return . Left) (fmap Right . f)
 
 -- Splits a string on any of the following chars,
 -- respecting single quotes.

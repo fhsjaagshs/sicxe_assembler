@@ -1,5 +1,7 @@
-	RESB	18
+	RESB	9
+NINE	RESB	9
 	COMP	VALUES,X
+	BASE	NINE
     . this is a comment
 	RESB	16
 VALUES	BYTE	C'WEMADEIT'

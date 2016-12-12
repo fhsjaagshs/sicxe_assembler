@@ -16,9 +16,9 @@ main = do
       outname = takeWhile (/= '.') inname ++ ".exe"
   case lines of
     Left err -> putStrLn $ "Failed to parse: " ++ err
-    Right lines' -> maybe (failure inname) (success outname srclines) $ assemble lines'
+    Right lines' -> either (failure inname) (success outname srclines) $ assemble lines'
   where
-    failure n = putStrLn $ "failed to assemble " ++ n
+    failure n err = putStrLn $ "failed to assemble " ++ n ++ ": " ++ err
     success outname src asm = do
       withBinaryFile outname WriteMode ((flip hPutBytes) (mconcat asm))
       printer 0 src asm
