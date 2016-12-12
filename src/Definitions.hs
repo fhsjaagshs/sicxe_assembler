@@ -112,7 +112,7 @@ operations = accum (OpDesc 0x00 "" []) sortFormats $ do
     format 3
     format 4
   op "LDL" $ do
-    opcode 0x70
+    opcode 0x08
     format 3
     format 4
   op "LDS" $ do
