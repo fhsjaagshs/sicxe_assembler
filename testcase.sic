@@ -1,4 +1,5 @@
 	RESB	18
 	COMP	VALUES,X
+    . this is a comment
 	RESB	16
 VALUES	BYTE	C'WEMADEIT'

@@ -12,7 +12,7 @@ main :: IO ()
 main = do
   inname <- fromMaybe "main.asm" . safeIdx 0 <$> getArgs
   srclines <- splitLines <$> readFile inname
-  let lines = mapM parseLine $ map tokenizeLine srclines
+  let lines = mapM parseLine $ map tokenizeLine $ filter (not . isComment) srclines
       outname = takeWhile (/= '.') inname ++ ".exe"
   maybe (failure inname) (success outname srclines) $ assemble =<< lines
   where

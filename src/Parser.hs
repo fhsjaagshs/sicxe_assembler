@@ -14,6 +14,7 @@ module Parser
   Operand(..),
   OperandType(..),
   Mnemonic(..),
+  isComment,
   tokenizeLine,
   parseLine
 )
@@ -36,13 +37,19 @@ data Line = Line (Maybe String) Mnemonic [Operand] deriving (Eq, Show)
 -- Tokenizer
 --
 
+-- | Determines if a line is a comment
+isComment :: String -> Bool
+isComment str = (safeIdx 0 $ dropWhile isWS str) == Just '.'
+  where isWS ' '  = True
+        isWS '\t' = True
+        isWS _    = False
+
 -- | Represents a token from @tokenizeLine@
 type Token = String
 
 -- | Splits line by whitespace, respecting single quotes
 -- This will return an empty list of tokens on a comment line.
 tokenizeLine :: String -> [Token]
-tokenizeLine ('.':_) = []
 tokenizeLine str = splitOn [' ', '\t'] str
 
 --
