@@ -14,6 +14,7 @@ main = do
   srclines <- splitLines <$> readFile inname
   let lines = mapM parseLine $ map tokenizeLine $ filter (not . isComment) srclines
       outname = takeWhile (/= '.') inname ++ ".exe"
+  print lines
   maybe (failure inname) (success outname srclines) $ assemble =<< lines
   where
     failure n = putStrLn $ "failed to assemble " ++ n
