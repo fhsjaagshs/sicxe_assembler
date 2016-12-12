@@ -3,8 +3,9 @@
 module Assembler
 (
   assemble,
-  packBits,
-  toBits
+  isBaseRelative,
+  isPCRelative,
+  calcDisp
 )
 where
 
@@ -210,7 +211,7 @@ isPCRelative :: (Ord a, Num a) => a -> Bool
 isPCRelative v = v >= -2048 && v < 2048
 
 isBaseRelative :: (Ord a, Num a) => a -> Bool
-isBaseRelative v = (not $ isPCRelative v) && v >= 0 && v < 4096
+isBaseRelative v = v >= 0 && v < 4096
 
 lookupMnemonic :: String -> Maybe OpDesc
 lookupMnemonic m = find ((==) m . opdescMnemonic) operations
@@ -282,7 +283,7 @@ format3 absolute op n i x memoff = do
         dispBits = reverse $ take 12 $ toBits disp
     getBP _ off True = (False, False)
     getBP addr off False = (b, p)
-      where b = isBaseRelative $ calcDisp addr off
+      where b = not p && (isBaseRelative $ calcDisp addr off)
             p = isPCRelative $ calcDisp (fromIntegral addr) (fromIntegral off)
 
 -- | Assembles a Format 4 instruction
