@@ -1,5 +1,6 @@
 module Common
 (
+  Result(..),
   bytesToInteger,
   integerToBytes,
   safeIdx,
@@ -7,7 +8,8 @@ module Common
   mayapply,
   splitOn,
   showHex,
-  hPutBytes
+  hPutBytes,
+  toM
 )
 where
 
@@ -24,6 +26,8 @@ import Control.Monad
 import Foreign.Marshal.Array
 
 import System.IO
+
+type Result a = Either String a
 
 -- | Packs a Big Endian @['Word8']@ into an 'Integer'. Since the
 -- 'Integer' type is implemented using GMP (or an unboxed Int#,
@@ -48,6 +52,10 @@ safeIdx :: Int -> [a] -> Maybe a
 safeIdx i xs
   | length xs > i = Just $ xs !! i
   | otherwise = Nothing
+
+toM :: Either l r -> Maybe r
+toM (Left _) = Nothing
+toM (Right r) = Just r
 
 -- | Monadic version of 'find'.
 findM :: (Monad m, Foldable t) => (a -> m Bool) -> t a -> m (Maybe a)

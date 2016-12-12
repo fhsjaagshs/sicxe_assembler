@@ -1,6 +1,6 @@
 {-|
 Module: Parser
-Description: Parse SIC/XE syntax using the Maybe monad.
+Description: Parse SIC/XE syntax
 License: Don't kill people, mmmmkay?
 Maintainer: nate@symer.io
 
@@ -22,12 +22,12 @@ where
 
 import Common
 
-import Data.Maybe
-import Text.Read
+import Text.Read (readEither)
 import Data.List
 import Data.Word
 import Data.Bits
 import Data.Char
+import Control.Exception
 import Control.Applicative
 
 -- | Represents a line of SIC/XE assembly.
@@ -57,10 +57,10 @@ tokenizeLine str = splitOn [' ', '\t'] str
 --
 
 -- | Parses a line of SIC/XE Assembly given a list of tokens.
-parseLine :: [Token] -> Maybe Line
-parseLine (l:n:o:_) = Line (nonnull l) <$> parseMnemonic n <*> parseOperands o
-parseLine (l:n:_) = Line (nonnull l) <$> parseMnemonic n <*> pure []
-parseLine _ = Nothing
+parseLine :: [Token] -> Result Line
+parseLine (l:n:o:_) = Line (toM $ nonnull l) <$> parseMnemonic n <*> parseOperands o
+parseLine (l:n:_) = Line (toM $ nonnull l) <$> parseMnemonic n <*> pure []
+parseLine _ = Left "invalid number of whitespace-delineated columns"
 
 --
 -- Mnemonics
@@ -70,7 +70,7 @@ parseLine _ = Nothing
 data Mnemonic = Mnemonic String Bool deriving (Eq, Show)
 
 -- | Parses a mnemonic from a token.
-parseMnemonic :: Token -> Maybe Mnemonic
+parseMnemonic :: Token -> Result Mnemonic
 parseMnemonic = fmap f . nonnull 
   where f ('+':xs) = Mnemonic xs True
         f xs       = Mnemonic xs False
@@ -86,16 +86,16 @@ data OperandType = OpSimple | OpIndirect | OpImmediate deriving (Eq, Show)
 data Operand = Operand (Either Integer String) OperandType deriving (Eq, Show)
 
 -- | Parse multiple operands in one token.
-parseOperands :: Token -> Maybe [Operand]
+parseOperands :: Token -> Result [Operand]
 parseOperands = mapM parseOperand . splitOn [',']
 
 -- | Parse a single operand.
-parseOperand :: Token -> Maybe Operand
-parseOperand ('#':xs)      = (flip Operand OpImmediate) <$> (eitherOr numeric alphaNumeric xs)
-parseOperand ('@':xs)      = (flip Operand OpIndirect) <$> (eitherOr numeric alphaNumeric xs)
+parseOperand :: Token -> Result Operand
+parseOperand ('#':xs)      = (flip Operand OpImmediate) <$> (choice numeric alphaNumeric xs)
+parseOperand ('@':xs)      = (flip Operand OpIndirect) <$> (choice numeric alphaNumeric xs)
 parseOperand ('C':'\'':xs) = flip Operand OpImmediate . Left . bytesToInteger . map (fromIntegral . ord) <$> quoted ('\'':xs)
 parseOperand ('X':'\'':xs) = flip Operand OpImmediate . Left . bytesToInteger <$> (quoted ('\'':xs) >>= hexstring)
-parseOperand xs            = (flip Operand OpSimple) <$> (eitherOr numeric alphaNumeric xs)
+parseOperand xs            = (flip Operand OpSimple) <$> (choice numeric alphaNumeric xs)
 
 --
 -- Predicates
@@ -115,39 +115,44 @@ isAlphabetic c = c' >= ord 'A' && c' <= ord 'Z'
 -- | Parses a string in quotes: i.e.
 -- the first char is a '\'', as is the last.
 -- Excludes the quotes in the result.
-quoted :: Token -> Maybe String
+quoted :: Token -> Result String
 quoted = (=<<) f . nonnull
   where f ('\'':xs)
-          | after == "'" = Just before
-          | otherwise = Nothing 
+          | after == "'" = Right before
+          | otherwise = Left "no closing quote"
           where (before,after) = span ((/=) '\'') xs
+        f _ = Left "no opening quote"
 
 -- | Parses a string that has length > 0.
-nonnull :: Token -> Maybe String
-nonnull "" = Nothing
-nonnull str = Just str
+nonnull :: Token -> Result String
+nonnull "" = Left "expected non-null string"
+nonnull str = Right str
 
 -- | Parses numeric strings.
-numeric :: Token -> Maybe Integer
-numeric = (=<<) readMaybe . predicated isNumeric
+numeric :: Token -> Result Integer
+numeric = (=<<) readEither . predicated isNumeric
 
 -- | Parses alphanumeric strings.
-alphaNumeric :: Token -> Maybe String
+alphaNumeric :: Token -> Result String
 alphaNumeric = predicated isAlphaNum
 
 -- | Makes a parser from a predicate such that:
 -- 1. For all characters c in the result, p(c(sub)i) = True
 -- 2. The length of the result must equal the length of the input token.
-predicated :: (Char -> Bool) -> Token -> Maybe String
-predicated p str = nonnull =<< sequence (unfoldr (mkf p) str)
-  where mkf _ [] = Nothing
-        mkf pred (x:xs)
-          | pred x = Just (Just x, xs) 
-          | otherwise = Just (Nothing, "")
+predicated :: (Char -> Bool) -> Token -> Result String
+predicated p str = nonnull =<< sequence (unfoldr f str)
+  where f [] = Nothing
+        f (x:xs)
+          | p x = Just (Right x, xs) 
+          | otherwise = Just (Left $ "unexpected '" ++ (x:"'") , "")
 
 -- | Makes a parser that will succeed if one of @l@ and @r@ succeeds.
-eitherOr :: (Token -> Maybe l) -> (Token -> Maybe r) -> Token -> Maybe (Either l r)
-eitherOr l r str = (Left <$> l str) <|> (Right <$> r str)
+choice ::  (a -> Result l) -> (a -> Result r) -> a -> Result (Either l r)
+choice a b str = f (a str) (b str)
+  where
+    f (Right l)  _        = Right (Left l)
+    f (Left _)  (Right r) = Right (Right r)
+    f (Left el) (Left er) = Left $ el ++ " / " ++ er
 
 --
 -- Specific parsers
@@ -155,7 +160,7 @@ eitherOr l r str = (Left <$> l str) <|> (Right <$> r str)
 
 -- TODO: nonnull????
 -- | Reads a binary value in hex from a 'String'.
-hexstring :: String -> Maybe [Word8]
+hexstring :: String -> Result [Word8]
 hexstring = fmap (group []) . mapM (hexchar . toUpper)
   where group :: [Word8] -> [Word8] -> [Word8]
         group acc [] = acc
@@ -164,10 +169,10 @@ hexstring = fmap (group []) . mapM (hexchar . toUpper)
 
 -- | Reads a hex nybble into the low bits of a byte
 -- from a 'Char'.
-hexchar :: Char -> Maybe Word8
+hexchar :: Char -> Result Word8
 hexchar a
-  | between '0' '9' a = Just $ fromIntegral $ ord a - ord '0'
-  | between 'A' 'F' a = Just $ fromIntegral $ (ord a - ord 'A') + 10
-  | otherwise = Nothing
+  | between '0' '9' a = Right $ fromIntegral $ ord a - ord '0'
+  | between 'A' 'F' a = Right $ fromIntegral $ (ord a - ord 'A') + 10
+  | otherwise = Left $ "unexpected '" ++ (a:"'")
   where between a b c = ord b >= ord c && ord c >= ord a
 

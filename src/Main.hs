@@ -11,11 +11,12 @@ import System.IO
 main :: IO ()
 main = do
   inname <- fromMaybe "main.asm" . safeIdx 0 <$> getArgs
-  srclines <- splitLines <$> readFile inname
-  let lines = mapM parseLine $ map tokenizeLine $ filter (not . isComment) srclines
+  srclines <- filter (not . isComment) . splitOn "\n" <$> readFile inname
+  let lines = mapM parseLine $ map tokenizeLine srclines
       outname = takeWhile (/= '.') inname ++ ".exe"
-  print lines
-  maybe (failure inname) (success outname srclines) $ assemble =<< lines
+  case lines of
+    Left err -> putStrLn $ "Failed to parse: " ++ err
+    Right lines' -> maybe (failure inname) (success outname srclines) $ assemble lines'
   where
     failure n = putStrLn $ "failed to assemble " ++ n
     success outname src asm = do
@@ -25,8 +26,4 @@ main = do
       putStrLn $ show addr ++ "\t" ++ s ++ "\t" ++ showHex a
       printer (addr + (length a)) src asm 
     printer _ _ _ = return ()
-    splitLines = filter (not . c) . splitOn ['\n']
-      where c ('.':_) = True
-            c _ = False
-
 
