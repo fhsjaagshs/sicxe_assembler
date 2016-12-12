@@ -1,0 +1,8 @@
+ONE     START 0
+FOO     LDA #8
+THING   BYTE X'FA'
+        BYTE X'DE'
+BAR     RESB 7
+        WORD 1234
+        RESW 3
+        END FOO

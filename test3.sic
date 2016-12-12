@@ -1,0 +1,19 @@
+. KATHARINE FUESI
+HW8     START   0
+FIRST   LDS     FIRST
+        ADD       #3   
+        TIO
+        +ADD    #OVER
+        J       OVER
+        +LDB      @RSLTPTR
+        COMP    VALUES,X
+OVER    ADDR    S,T
+        SHIFTL  A,5
+        SHIFTR  A,1
+        TIXR    A
+        SVC     0
+        RSUB
+RSLTPTR WORD    0
+VALUES  RESW      2
+        LDS     FIRST
+        END     1000

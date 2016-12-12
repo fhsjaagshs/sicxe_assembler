@@ -1,6 +1,8 @@
 module Assembler
 (
-  assemble
+  assemble,
+  packBits,
+  toBits
 )
 where
 
@@ -208,7 +210,7 @@ simpleToByte _ = Nothing
 word :: Integer -> Assembler [Word8]
 word i = do
   advanceAddress 3
-  return $ packBits $ reverse $ toBits ((fromIntegral i) :: Word32)
+  return $ packBits $ reverse $ take 24 $ toBits ((fromIntegral i) :: Word32)
 
 -- | Assembles a binary constant
 byte :: Integer -> Assembler [Word8]
