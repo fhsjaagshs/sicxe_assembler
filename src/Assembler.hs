@@ -1,3 +1,5 @@
+{-# LANGUAGE BangPatterns #-}
+
 module Assembler
 (
   assemble,
@@ -5,6 +7,8 @@ module Assembler
   toBits
 )
 where
+
+import Debug.Trace
 
 import Common
 import Parser
@@ -22,7 +26,7 @@ import Data.Foldable
 import Data.Monoid
 import Control.Applicative
 import Control.Monad
-import Control.Monad.State.Lazy
+import Control.Monad.State.Strict
 
 assemble :: [Line] -> Maybe [[Word8]]
 assemble ls = runAssembler 0 mempty $ do
@@ -112,8 +116,8 @@ lineFormat (Line _ (Mnemonic m extended) oprs) = maybe (return Nothing) f $ look
       | otherwise = do
         addrc <- address
         addrx <- fromMaybe addrc <$> getAddr x
-        let disp = ((fromIntegral addrx) - (fromIntegral addrc)) :: Integer
-        return $ not $ disp < -2048 || disp > 4095
+        let disp = (fromIntegral addrc) - (fromIntegral addrx)
+        return $ disp >= -2048 || disp < 4096
     valid _      3 = return True
     valid _      4 = return True
     valid _      _ = return False
@@ -165,7 +169,7 @@ assembleLine l@(Line _ (Mnemonic m _) oprs) = do
 getAddr :: Operand -> Assembler (Maybe Address)
 getAddr (Operand (Left s) _) = return $ Just $ fromIntegral s
 getAddr (Operand (Right s) _) = getSymbol s
-    
+ 
 --
 -- Helpers
 --
@@ -195,6 +199,18 @@ getI a = isType OpImmediate a || isType OpSimple a
 -- | DRY to calculate N of nixbpe
 getN :: Operand -> Bool
 getN a = isType OpIndirect a || isType OpSimple a
+
+-- | Calculates the address displacement given
+-- the start of the current instruction (@addr@)
+-- and the offset to calc displacement for @memoff@
+calcDisp :: Num a => a -> a -> a
+calcDisp addr memoff = memoff - (addr + 3) -- +3 comes from the fact that displacement is only used with format 3 instructions
+
+isPCRelative :: (Ord a, Num a) => a -> Bool
+isPCRelative v = v >= -2048 && v < 2048
+
+isBaseRelative :: (Ord a, Num a) => a -> Bool
+isBaseRelative v = (not $ isPCRelative v) && v >= 0 && v < 4096
 
 lookupMnemonic :: String -> Maybe OpDesc
 lookupMnemonic m = find ((==) m . opdescMnemonic) operations
@@ -251,27 +267,32 @@ format2 op rega regb = do
 -- | Assembles a Format 3 instruction.
 format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
 format3 absolute op n i x memoff = do
-  curaddr <- address
-  let disp = ((fromIntegral memoff) - (fromIntegral curaddr)) :: Int
-      disp' = bool disp (fromIntegral memoff) absolute
-      disp'' = ((fromIntegral disp') :: Word32)
-      b = not p && disp' >= 0 && disp' <= 4095 && not absolute
-      p = disp' >= -2048 && disp' <= 2047 && not absolute
-      prefix = format34DRY op n i x b p False
+  addr <- address
+  let (b, p) = getBP addr memoff absolute 
   if b || p || absolute
     then do
-      advanceAddress 3
-      return $ packBits $ prefix ++ (reverse $ take 12 $ toBits $ disp'')
+      advanceAddress 3 
+      return $ getBytes b p addr
     else format4 op n i x memoff
+  where
+    getBytes b p addr = packBits $ prefix ++ dispBits 
+      where
+        disp = bool (calcDisp addr memoff) memoff absolute
+        prefix = format34DRY op n i x b p False
+        dispBits = reverse $ take 12 $ toBits disp
+    getBP _ off True = (False, False)
+    getBP addr off False = (b, p)
+      where b = isBaseRelative $ calcDisp addr off
+            p = isPCRelative $ calcDisp (fromIntegral addr) (fromIntegral off)
 
--- | Assembles a Format 4 instruction.
+-- | Assembles a Format 4 instruction
 format4 :: Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
 format4 op n i x addr = do
   advanceAddress 4
-  return $ packBits $ prefix ++ addr'
+  return $ packBits $ prefix ++ addrBits
   where
     prefix = format34DRY op n i x False False True
-    addr' = reverse $ take 20 $ toBits addr
+    addrBits = reverse $ take 20 $ toBits addr
 
 format34DRY :: Word8 -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> [Bool]
 format34DRY op n i x b p e = op' ++ [n, i, x, b, p, e]
