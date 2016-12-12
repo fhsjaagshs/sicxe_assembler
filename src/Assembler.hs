@@ -114,7 +114,8 @@ lineFormat (Line _ (Mnemonic m extended) oprs) = maybe (return Nothing) f $ look
         addrx <- fromMaybe addrc <$> getAddr x
         let disp = ((fromIntegral addrx) - (fromIntegral addrc)) :: Integer
         return $ not $ disp < -2048 || disp > 4095
-    valid (_:_)  4 = return True
+    valid _      3 = return True
+    valid _      4 = return True
     valid _      _ = return False
 
 -- | Determine the size of a line (directive or instruction) of SIC/XE
@@ -148,8 +149,10 @@ assembleLine l@(Line _ (Mnemonic m _) oprs) = do
     mkinstr opc 2 [a, b] = mayapply (format2 opc) (simpleToByte a) (simpleToByte b)
     mkinstr opc 3 [a, b] = getAddr a >>= mayapply (format3 (reqAbs a) opc (getN a) (getI a)) (return $ getX a b)
     mkinstr opc 3 [a]    = getAddr a >>= mayapply (format3 (reqAbs a) opc (getN a) (getI a)) (return False)
+    mkinstr opc 3 []     = Just <$> format3 True opc True True False 0
     mkinstr opc 4 [a, b] = getAddr a >>= mayapply (format4 opc (getN a) (getI a)) (return $ getX a b)
     mkinstr opc 4 [a]    = getAddr a >>= mayapply (format4 opc (getN a) (getI a)) (return False)
+    mkinstr opc 4 []     = Just <$> format4 opc True True False 0
     mkdirec "BYTE" [Operand (Left v) OpImmediate] = Just <$> byte v
     mkdirec "WORD" [Operand (Left v) OpSimple] = Just <$> word v
     mkdirec "RESB" [Operand (Left n) OpSimple] = Just <$> resb (fromIntegral n)
@@ -249,7 +252,7 @@ format2 op rega regb = do
 format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
 format3 absolute op n i x memoff = do
   curaddr <- address
-  let disp = ((fromIntegral curaddr) - (fromIntegral memoff)) :: Int
+  let disp = ((fromIntegral memoff) - (fromIntegral curaddr)) :: Int
       disp' = bool disp (fromIntegral memoff) absolute
       disp'' = ((fromIntegral disp') :: Word32)
       b = not p && disp' >= 0 && disp' <= 4095 && not absolute
@@ -271,9 +274,8 @@ format4 op n i x addr = do
     addr' = reverse $ take 20 $ toBits addr
 
 format34DRY :: Word8 -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> [Bool]
-format34DRY op n i x b p e = (reverse $ toBits (set (set op 0 i) 1 n)) ++ [x, b, p, e]
-  where set v i True = setBit v i
-        set v i False = clearBit v i
+format34DRY op n i x b p e = op' ++ [n, i, x, b, p, e]
+  where op' = take 6 $ reverse $ toBits op
 
 -- | Turns a @FiniteBits a@ into a list of bits in bit endian order, with no special ordering of bits.
 -- 'toBits' is dedicated to Fritz Wiedmer, my grandfather (~1925 to 2016). During

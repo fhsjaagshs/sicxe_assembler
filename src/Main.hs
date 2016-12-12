@@ -21,7 +21,7 @@ main = do
       withBinaryFile outname WriteMode ((flip hPutBytes) (mconcat asm))
       printer 0 src asm
     printer addr (s:src) (a:asm) = do
-      putStrLn $ show addr ++ s ++ "\t" ++ showHex a
+      putStrLn $ show addr ++ "\t" ++ s ++ "\t" ++ showHex a
       printer (addr + (length a)) src asm 
     printer _ _ _ = return ()
     splitLines = filter (not . c) . splitOn ['\n']

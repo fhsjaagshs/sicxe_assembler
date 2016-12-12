@@ -131,6 +131,10 @@ operations = accum (OpDesc 0x00 "" []) sortFormats $ do
     opcode 0xD0 
     format 3
     format 4
+  op "MUL" $ do
+    opcode 0x20
+    format 3
+    format 4
   op "MULR" $ do
     opcode 0x98
     format 2
