@@ -110,10 +110,13 @@ preprocessLine l@(Line lbl (Mnemonic m extended) oprs)
       | not hasEnoughOperands = Left "not enough operands"
       | (not $ elem 4 fs) && extended = Left "non extensible mnemonic extended"
      -- | not operandsMatch = Left "invalid operands"
-      | otherwise = Right $ Line lbl (Mnemonic m extended) (map xform $ take no oprs)
+      | otherwise = Right $ Line lbl (Mnemonic m extended) oprs'
       where
         hasEnoughOperands = (length oprs) >= no
         operandsMatch = all (uncurry validator) $ zipWith (,) oprs [0..no - 1] 
+        oprs' = (map xform $ take no oprs) ++ (maybe [] pure $ find isIndexingReg oprs)
+
+
 
 -- | Determine the format of a line of SIC/XE assembler.
 lineFormat :: Line -> Assembler (Result Int)
