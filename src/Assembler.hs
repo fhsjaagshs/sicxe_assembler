@@ -119,7 +119,7 @@ preprocessLine l@(Line lbl (Mnemonic m extended) oprs)
     f (OpDesc _ _ fs no xform validator)
       | not hasEnoughOperands = Left "not enough operands"
       | (not $ elem 4 fs) && extended = Left "non extensible mnemonic extended"
-     -- | not operandsMatch = Left "invalid operands"
+     -- | not operandsMatch = Left "invalid operands" -- TODO: fixme?? Might not be needed
       | otherwise = Right $ Line lbl (Mnemonic m extended) oprs''
       where
         hasEnoughOperands = (length oprs) >= no
@@ -130,7 +130,6 @@ preprocessLine l@(Line lbl (Mnemonic m extended) oprs)
           | otherwise = map xform $ oprs' ++ (maybe [] pure $ find isIndexingReg oprs)
           where
             idxRegIdx = findIndex isIndexingReg oprs
-    --    hasIndexingOp = (==) 1 . length . findIndices isIndexingReg
 
 -- | Determine the format of a line of SIC/XE assembler.
 lineFormat :: Line -> Assembler (Result Int)
@@ -233,9 +232,24 @@ getI a = isType OpImmediate a || isType OpSimple a
 getN :: Operand -> Bool
 getN a = isType OpIndirect a || isType OpSimple a
 
+lookupMnemonic :: String -> Result OpDesc
+lookupMnemonic m = fromM ("invalid mnemonic: " ++ m) $ find ((==) m . opdescMnemonic) operations
+
+lookupRegister :: String -> Result Word8
+lookupRegister r = fromM ("register doesn't exist: " ++ r) $ lookup r registers
+
+-- | Turns an operand into either a register code or its integral value.
+format2Operand :: Operand -> Result Word8
+format2Operand (Operand v OpSimple) = either (Right .fromIntegral) lookupRegister v
+format2Operand (Operand v _) = Left $ "Operand '" ++ either show id v ++ "' is not compatible with format 2 mnemonics."
+
+--
+-- Second Pass (Low Level)
+--
+
 -- TODO: fixme: 5 too high on 
--- | Calculates the address displacement given
--- the start of the current instruction (@addr@)
+-- | Calculates the address displacement for @memoff@ from either
+-- the program counter or a base
 -- and the offset to calc displacement for @memoff@
 calcDisp :: Address -> Assembler (Result Int)
 calcDisp memoff = do
@@ -251,25 +265,10 @@ calcDisp memoff = do
   where m = fromIntegral memoff
 
 isPCRelative :: (Ord a, Num a) => a -> Bool
-isPCRelative v = v >= -2048 && v <= 2048
+isPCRelative v = v >= -2048 && v <= 2047
 
 isBaseRelative :: (Ord a, Num a) => a -> Bool
 isBaseRelative v = v >= 2048 && v < 4096
-
-lookupMnemonic :: String -> Result OpDesc
-lookupMnemonic m = fromM ("invalid mnemonic: " ++ m) $ find ((==) m . opdescMnemonic) operations
-
-lookupRegister :: String -> Result Word8
-lookupRegister r = fromM ("register doesn't exist: " ++ r) $ lookup r registers
-
--- | Turns an operand into either a register code or its integral value.
-format2Operand :: Operand -> Result Word8
-format2Operand (Operand v OpSimple) = either (Right .fromIntegral) lookupRegister v
-format2Operand (Operand v _) = Left $ "Operand '" ++ either show id v ++ "' is not compatible with format 2 instructions."
-
---
--- Second Pass (Low Level)
---
 
 -- | Assembles a 24-bit word constant
 word :: Integer -> Assembler [Word8]
@@ -305,33 +304,27 @@ format2 op a b = [op, shiftL a 4 .|. b] <$ advanceAddress 2
 
 -- | Assembles a Format 3 instruction.
 format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler (Result [Word8])
-format3 True op n i x memoff = return $ Right $ packBits $ prefix ++ (toWordN 12 memoff)
-  where prefix = format34DRY op n i x False False False
+format3 True op n i x memoff = return $ Right $ packBits $ prefix ++ toWordN 12 memoff
+  where prefix = toWordNEnd 6 op ++ [n, i, x, False, False, False]
 format3 False op n i x memoff = bindResultM f (calcDisp memoff)
   where
-    f disp = do
-      let b = isBaseRelative disp
-          p = isPCRelative disp
-          prefix = format34DRY op n i x b p False
-      if b || p
-      then do
-        advanceAddress 3
-        return $ packBits $ prefix ++ (toWordN 12 disp)
-      else format4 op n i x memoff
+    f disp
+      | b || p = packBits (prefix ++ toWordN 12 disp) <$ advanceAddress 3
+      | otherwise =  format4 op n i x memoff
+      where prefix = toWordNEnd 6 op ++ [n, i, x, b, p, False]
+            b = isBaseRelative disp
+            p = isPCRelative disp
 
 -- | Assembles a Format 4 instruction
 format4 :: Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
 format4 op n i x addr = packBits (prefix ++ toWordN 20 addr) <$ advanceAddress 4
-  where prefix = format34DRY op n i x False False True
+  where prefix = toWordNEnd 6 op ++ [n, i, x, False, False, True]
 
-format34DRY :: Word8 -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool -> [Bool]
-format34DRY op n i x b p e = toWordNEnd 6 op ++ [n, i, x, b, p, e]
-
--- | Turns a FiniteBits into a Big Endian WordN, truncating most -> least sig
+-- | Turns a FiniteBits into a Big Endian WordN, truncating keeping less sig bits
 toWordN :: FiniteBits a => Int -> a -> [Bool]
 toWordN n = reverse . take n . toBits
 
--- | Turns a FiniteBits into a Big Endian WordN, truncating least -> most sig
+-- | Turns a FiniteBits into a Big Endian WordN, truncating keeping most sig bits
 toWordNEnd :: FiniteBits a => Int -> a -> [Bool]
 toWordNEnd n = take n . reverse . toBits
 
