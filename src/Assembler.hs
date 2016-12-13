@@ -114,9 +114,11 @@ preprocessLine l@(Line lbl (Mnemonic m extended) oprs)
       where
         hasEnoughOperands = (length oprs) >= no
         operandsMatch = all (uncurry validator) $ zipWith (,) oprs [0..no - 1] 
-        oprs' = (map xform $ take no oprs) ++ (maybe [] pure $ find isIndexingReg oprs)
-
-
+        oprs' = (map xform $ take no oprs)
+        oprs''
+          | hasIndexingOp oprs && hasIndexingOp oprs' = oprs'
+          | otherwise = oprs' ++ (maybe [] pure $ find isIndexingReg oprs)
+        hasIndexingOp = (==) 1 . length . findIndeces isIndexingReg
 
 -- | Determine the format of a line of SIC/XE assembler.
 lineFormat :: Line -> Assembler (Result Int)
