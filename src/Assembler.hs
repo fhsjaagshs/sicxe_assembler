@@ -10,8 +10,6 @@ module Assembler
 )
 where
 
-import Debug.Trace
-
 import Common
 import Parser
 import Definitions
@@ -54,13 +52,13 @@ address = fst' <$> get
 
 -- | Set the current address 
 setAddress :: Address -> Assembler ()
-setAddress addr = state $ \(_, st, b) -> trace "SETADDR" ((), (addr, st, b))
+setAddress addr = state $ \(_, st, b) -> ((), (addr, st, b))
 
 getBase :: Assembler (Maybe Address)
 getBase = thd' <$> get
 
 setBase :: Address -> Assembler ()
-setBase a = state $ \(addr, st, b) -> trace "SETBASE" ((), (addr, st, b <|> Just a))
+setBase a = state $ \(addr, st, b) -> ((), (addr, st, b <|> Just a))
 
 -- | Set the current address to the start of the program.
 -- Use this instead of @setAddress 0@ because 'Assembler'
@@ -320,7 +318,7 @@ format3 absolute op n i x memoff = do
   if b || p || absolute
     then do
       advanceAddress 3
-      return $ getBytes b p addr (traceShowId $ fromIntegral disp)
+      return $ getBytes b p addr $ fromIntegral disp
     else format4 op n i x memoff
   where
     getBytes b p addr boff = packBits $ (++) prefix $ toWordN 12 (disp :: Word32)
