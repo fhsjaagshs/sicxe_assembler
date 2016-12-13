@@ -65,6 +65,10 @@ isRegister _                                = False
 isMemory :: Operand -> Bool
 isMemory o@(Operand v _) = isRight v && not (isRegister o)
 
+isMemoryOrImmediate :: Operand -> Bool
+isMemoryOrImmediate o@(Operand (Right _) _) = not $ isRegister o
+isMemoryOrImmediate (Operand (Left _) t) = t == OpImmediate 
+
 isNumber :: Operand -> Bool
 isNumber (Operand (Left _) OpSimple) = True
 isNumber _                           = False
@@ -80,6 +84,9 @@ twoRegisters = packV [isRegister, isRegister]
 
 noOperands :: Operand -> Int -> Bool
 noOperands = const $ const False
+
+singleMemOrImm :: Operand -> Int -> Bool
+singleMemOrImm = packV [isMemoryOrImmediate]
 
 --
 -- Operation Declarations
@@ -144,30 +151,37 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
     opcode 0x00
     format 3
     format 4
+    validator singleMemOrImm
   op "LDB" $ do 
     opcode 0x68
     format 3
     format 4
+    validator singleMemOrImm
   op "LDCH" $ do 
     opcode 0x50
     format 3
     format 4
+    validator singleMemOrImm
   op "LDL" $ do
     opcode 0x08
     format 3
     format 4
+    validator singleMemOrImm
   op "LDS" $ do
     opcode 0x6C
     format 3
     format 4
+    validator singleMemOrImm
   op "LDT" $ do
     opcode 0x74
     format 3
     format 4
+    validator singleMemOrImm
   op "LDX" $ do
     opcode 0x04
     format 3
     format 4
+    validator singleMemOrImm
   op "LPS" $ do
     opcode 0xD0 
     format 3
@@ -216,38 +230,47 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
     opcode 0x0C
     format 3
     format 4
+    validator singleMemOrImm
   op "STB" $ do
     opcode 0x78
     format 3
     format 4
+    validator singleMemOrImm
   op "STCH" $ do
     opcode 0x54
     format 3
     format 4
+    validator singleMemOrImm
   op "STI" $ do
     opcode 0xD4
     format 3
     format 4
+    validator singleMemOrImm
   op "STL" $ do
     opcode 0x14
     format 3
     format 4
+    validator singleMemOrImm
   op "STS" $ do
     opcode 0x7C
     format 3
     format 4
+    validator singleMemOrImm
   op "STSW" $ do
     opcode 0xE8
     format 3
     format 4
+    validator singleMemOrImm
   op "STT" $ do
     opcode 0x84
     format 3
     format 4
+    validator singleMemOrImm
   op "STX" $ do
     opcode 0x10
     format 3
     format 4
+    validator singleMemOrImm
   op "SUB" $ do
     opcode 0x1C
     format 3

@@ -8,3 +8,5 @@ VALUES	BYTE	C'WEMADEIT'
 FIRST      STL          NINE         SAVE RETURN ADDRESS
            J            @NINE        RETURN TO CALLER
            RSUB                         RETURN TO CALLER
+	SHIFTL	A,4
+	LDA	#8
