@@ -109,7 +109,7 @@ preprocessLine l@(Line lbl (Mnemonic m extended) oprs)
     f (OpDesc _ _ fs no xform validator)
       | not hasEnoughOperands = Left "not enough operands"
       | (not $ elem 4 fs) && extended = Left "non extensible mnemonic extended"
-      | not operandsMatch = Left "invalid operands"
+     -- | not operandsMatch = Left "invalid operands"
       | otherwise = Right $ Line lbl (Mnemonic m extended) (map xform $ take no oprs)
       where
         hasEnoughOperands = (length oprs) >= no
