@@ -328,7 +328,7 @@ format3 absolute op n i x memoff = do
             prefix = format34DRY op n i x b p False
     getBP _ off _ True = (False, False)
     getBP addr boff off False = (p, b)
-      where b = not p && isBaseRelative boff
+      where b = boff >= 0 && isBaseRelative boff
             p = isPCRelative boff
 
 -- | Assembles a Format 4 instruction
