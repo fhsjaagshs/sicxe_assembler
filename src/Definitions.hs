@@ -14,6 +14,8 @@ import AccumulatorT
 import Data.Functor.Identity
 import Data.List
 import Data.Word
+import Data.Maybe
+import Data.Either
 
 accum :: i -> (i -> c) -> AccumulatorT c i Identity () -> [c]
 accum i f acc = res
@@ -43,11 +45,11 @@ indexingRegister = ("X", 1)
 data OpDesc = OpDesc {
   opdescOpcode :: Word8,
   opdescMnemonic :: String,
-  opdescFormats :: [Int]
-  opdescNumberOperands :: Int
-  opdescOperandTransform :: Operand -> Operand
+  opdescFormats :: [Int],
+  opdescNumberOperands :: Int,
+  opdescOperandTransform :: Operand -> Operand,
   opdescOperandValidator :: Operand -> Int -> Bool
-} deriving (Eq, Show)
+}
 
 sortFormats :: OpDesc -> OpDesc
 sortFormats o = o { opdescFormats = (sort $ opdescFormats o) }
@@ -68,13 +70,16 @@ isNumber (Operand (Left _) OpSimple) = True
 isNumber _                           = False
 
 packV :: [Operand -> Bool] -> Operand -> Int -> Bool
-packV xs op i = maybe False ($ op) safeIdx xs
+packV xs op i = maybe False ($ op) (safeIdx i xs)
 
 singleMemory :: Operand -> Int -> Bool
 singleMemory = packV [isMemory]
 
 twoRegisters :: Operand -> Int -> Bool
 twoRegisters = packV [isRegister, isRegister]
+
+noOperands :: Operand -> Int -> Bool
+noOperands = const $ const False
 
 --
 -- Operation Declarations
@@ -105,7 +110,6 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
   op "COMPR" $ do
     opcode 0xA0
     format 2
-    validator $ 
   op "DIV" $ do
     opcode 0x24
     format 3
@@ -190,6 +194,7 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
     opcode 0x4C
     format 3
     format 4
+    numberOperands 0
   op "SHIFTL" $ do
     opcode 0xA4
     format 2
@@ -291,7 +296,7 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
             getValidator 1 = noOperands
             getValidator _ = noOperands
     numberOperands n = incomplete $ \(OpDesc o m fs _ f v) -> return $ OpDesc o m fs n f v
-    validator v = incomplete $ \OpDesc o m fs n f _ -> return $ OpDesc o m fs n f v
-    transform f = incomplete $ \OpDesc o m fs n _ v -> return $ OpDesc o m fs n f v
+    validator v = incomplete $ \(OpDesc o m fs n f _) -> return $ OpDesc o m fs n f v
+    transform f = incomplete $ \(OpDesc o m fs n _ v) -> return $ OpDesc o m fs n f v
     decr (Operand (Left v) OpSimple) = Operand (Left $ v - 1) OpSimple
     decr o = o

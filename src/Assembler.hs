@@ -31,10 +31,12 @@ import Control.Monad.Except
 import Control.Monad.State.Strict
 
 assemble :: [Line] -> Result [[Word8]]
-assemble ls = runAssembler 0 mempty $ do
-  firstPass ls
-  resetAddress
-  secondPass ls
+assemble = (=<<) f . mapM preprocessLine
+  where
+    f ls = runAssembler 0 mempty $ do
+      firstPass ls
+      resetAddress
+      secondPass ls
 
 type Address = Word32 -- | 1MB Address
 type SymbolTable = HashMap String Address -- | Symbol table
@@ -74,6 +76,7 @@ setSymbol sym a = state $ \(addr, st) -> ((), (addr, HM.insert sym a st))
 getSymbol :: String -> Assembler (Result Address)
 getSymbol sym = fromM err . HM.lookup sym <$> symbolTable
   where err = "symbol '" ++ sym ++ "' doesn't exist"
+
 --
 -- First Pass
 --
@@ -97,6 +100,21 @@ secondPass = fmap sequence . mapM assembleLine
 
 -- TODO: implement numberOperands (with special concerns for ,X), transforms, and validators
 
+-- | Tests if a 'Line' is valid.
+preprocessLine :: Line -> Result Line
+preprocessLine l@(Line lbl (Mnemonic m extended) oprs)
+  | m `elem` ["BYTE", "WORD", "RESB", "RESW", "START", "END", "BASE"] = Right l
+  | otherwise = lookupMnemonic m >>= f
+  where
+    f (OpDesc _ _ fs no xform validator)
+      | not hasEnoughOperands = Left "not enough operands"
+      | (not $ elem 4 fs) && extended = Left "non extensible mnemonic extended"
+      | not operandsMatch = Left "invalid operands"
+      | otherwise = Right $ Line lbl (Mnemonic m extended) (map xform $ take no oprs)
+      where
+        hasEnoughOperands = (length oprs) >= no
+        operandsMatch = all (uncurry validator) $ zipWith (,) oprs [0..no - 1] 
+
 -- | Determine the format of a line of SIC/XE assembler.
 lineFormat :: Line -> Assembler (Result Int)
 lineFormat (Line _ (Mnemonic m extended) oprs) = either (return . Left) f $ lookupMnemonic m
@@ -105,7 +123,7 @@ lineFormat (Line _ (Mnemonic m extended) oprs) = either (return . Left) f $ look
     toRes mlf = do
       a <- address
       return $ fromM ("invalid line at address: " ++ show a) mlf
-    -- | @valid@ is a predicate that validates
+    -- | @valid@ is a predicate that validates 
     -- the line's operands with regard to the
     -- instruction format(s) dictated by the mnemonic. 
     valid []     1 = return True
@@ -146,8 +164,8 @@ assembleLine l@(Line _ (Mnemonic m _) oprs) = do
   lf <- lineFormat l
   g $ (,) <$> lf <*> lookupMnemonic m
   where
-    g (Right (f, OpDesc opc _ _)) = mkinstr opc f oprs
-    g (Left _)                    = mkdirec m oprs
+    g (Right (f, o)) = mkinstr (opdescOpcode o) f oprs
+    g (Left _)       = mkdirec m oprs
     mkinstr :: Word8 -> Int -> [Operand] -> Assembler (Result [Word8])
     mkinstr opc 1 _      = Right <$> format1 opc
     mkinstr opc 2 [a]    = applyResultA2 (format2 opc) (format2Operand a) (Right 0)
