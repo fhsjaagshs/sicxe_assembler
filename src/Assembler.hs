@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ScopedTypeVariables, BangPatterns #-}
 
 module Assembler
 (
@@ -6,9 +6,13 @@ module Assembler
   isBaseRelative,
   isPCRelative,
   calcDisp,
-  toBits
+  toBits,
+  isBaseRelative,
+  isPCRelative
 )
 where
+
+import Debug.Trace
 
 import Common
 import Parser
@@ -241,25 +245,23 @@ getN a = isType OpIndirect a || isType OpSimple a
 -- | Calculates the address displacement given
 -- the start of the current instruction (@addr@)
 -- and the offset to calc displacement for @memoff@
-calcDisp :: Address -> Assembler (Maybe Int)
-calcDisp memoff = do
-  addr <- fromIntegral <$> address
-  let adjust = -3
-  if isPCRelative $ adjust + m - addr
-    then return $ Just $ adjust + m - addr
-    else do
-      b <- maybe maxBound fromIntegral <$> getBase
-      if isBaseRelative $ m - b
-        then return $ Just $ m - b
-        else return Nothing
+calcDisp :: Address -> Address -> Address -> Maybe Int
+calcDisp base addr memoff =
+  if isPCRelative $ adjust + m - a
+    then Just $ adjust + m - a
+    else if isBaseRelative $ m - b
+        then Just $ m - b
+        else Nothing
   where m = fromIntegral memoff
-        signbit = (finiteBitSize (undefined :: Int)) - 1
+        a = fromIntegral addr
+        b = fromIntegral base
+        adjust = -3
 
 isPCRelative :: (Ord a, Num a) => a -> Bool
-isPCRelative v = v >= -2048 && v < 2048
+isPCRelative v = v >= -2048 && v <= 2048
 
 isBaseRelative :: (Ord a, Num a) => a -> Bool
-isBaseRelative v = v >= 0 && v < 4096
+isBaseRelative v = v >= 2048 && v < 4096
 
 lookupMnemonic :: String -> Result OpDesc
 lookupMnemonic m = fromM ("invalid mnemonic: " ++ m) $ find ((==) m . opdescMnemonic) operations
@@ -310,24 +312,21 @@ format2 op a b = [op, shiftL a 4 .|. b] <$ advanceAddress 2
 
 -- | Assembles a Format 3 instruction.
 format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
-format3 absolute op n i x memoff = do
+format3 True op n i x memoff = return $ packBits $ prefix ++ (toWordN 12 memoff)
+  where prefix = format34DRY op n i x False False False
+format3 False op n i x memoff = do
   addr <- address
-  
-  disp <- fromMaybe 10000 <$> calcDisp memoff -- 10000 is longer than any valid relative offset * 2.
-  let (b, p) = getBP addr memoff disp absolute 
-  if b || p || absolute
+  base <- fromMaybe 10000 <$> getBase
+ 
+  let disp = fromMaybe 10000 $ calcDisp base addr memoff
+  let b = isBaseRelative disp
+      p = isPCRelative disp
+      prefix = format34DRY op n i x b p False
+  if b || p
     then do
       advanceAddress 3
-      return $ getBytes b p addr $ fromIntegral disp
+      return $ packBits $ prefix ++ (toWordN 12 disp)
     else format4 op n i x memoff
-  where
-    getBytes b p addr boff = packBits $ (++) prefix $ toWordN 12 (disp :: Word32)
-      where disp = bool boff memoff absolute
-            prefix = format34DRY op n i x b p False
-    getBP _ off _ True = (False, False)
-    getBP addr boff off False = (p, b)
-      where b = boff >= 0 && isBaseRelative boff
-            p = isPCRelative boff
 
 -- | Assembles a Format 4 instruction
 format4 :: Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
