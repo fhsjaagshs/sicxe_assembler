@@ -18,8 +18,8 @@ import Data.Bool
 import Data.List
 import Data.Either
 
-import Data.HashMap.Lazy (HashMap)
-import qualified Data.HashMap.Lazy as HM
+import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HM
 
 import Data.Maybe
 import Data.Foldable
@@ -33,9 +33,11 @@ assemble :: [Line] -> Result [[Word8]]
 assemble = (=<<) f . mapM preprocessLine
   where
     f ls = runAssembler 0 mempty $ do
+      resetAddress
       firstPass ls
       resetAddress
-      secondPass ls
+      st <- symbolTable
+      secondPass $ traceShow st $ ls
 
 type Address = Word32 -- | 1MB Address
 type SymbolTable = HashMap String Address -- | Symbol table
@@ -51,11 +53,13 @@ address = fst' <$> get
 
 -- | Set the current address 
 setAddress :: Address -> Assembler ()
-setAddress addr = state $ \(_, st, b) -> ((), (addr, st, b))
+setAddress addr = state $ \(_, st, b) -> ((), (traceShow ("setting addr " ++ show addr) addr, st, b))
 
+-- | Gets the base address.
 getBase :: Assembler (Maybe Address)
 getBase = thd' <$> get
 
+-- | Set the base address
 setBase :: Address -> Assembler ()
 setBase a = state $ \(addr, st, b) -> ((), (addr, st, b <|> Just a))
 
@@ -83,22 +87,54 @@ getSymbol sym = fromM err . HM.lookup sym <$> symbolTable
   where err = "symbol '" ++ sym ++ "' doesn't exist"
 
 --
+-- Preprocessing
+--
+
+-- TODO: implement numberOperands (with special concerns for ,X), transforms, and validators
+
+-- | Tests if a 'Line' is valid.
+preprocessLine :: Line -> Result Line
+preprocessLine l@(Line lbl (Mnemonic m ext) oprs)
+  | m `elem` ["BYTE", "WORD", "RESB", "RESW", "START", "END", "BASE"] = Right l
+  | otherwise = lookupMnemonic m >>= f
+  where
+    f (OpDesc _ _ fs no xform validator)
+      | not hasEnoughOperands = Left "not enough operands"
+      | not (elem 4 fs) && ext = Left "non extensible mnemonic extended"
+     -- | not operandsMatch = Left "invalid operands" -- TODO: fixme?? Might not be needed
+      | otherwise = Right $ Line lbl (Mnemonic m ext) oprs''
+      where
+        hasEnoughOperands = (length oprs) >= no
+        -- operandsMatch = all (uncurry validator) $ zipWith (,) oprs [0..no - 1] 
+        oprs' = take no oprs
+        oprs''
+          | fromMaybe False ((< no) <$> idxRegIdx) = map xform oprs'
+          | otherwise = map xform $ oprs' ++ (maybe [] pure $ find isIndexingReg oprs)
+          where
+            idxRegIdx = findIndex isIndexingReg oprs
+
+
+--
 -- First Pass
 --
 
 -- | Does the first pass of assembly, finding all of
 -- the labels and recording them in the symtab.
-firstPass :: [Line] -> Assembler (Result ())
-firstPass [] = return $ Right ()
-firstPass (Line _ (Mnemonic "BASE" False) _:ls) = (address >>= setBase) >> firstPass ls
-firstPass (l@(Line lbl _ _):ls) = do
-  applyResultA (\s -> setSymbol s =<< address) $ fromM "" lbl
-  lsz <- sizeofLine l
-  case lsz of
-    Right v -> do
-      advanceAddress v
+firstPass :: [Line] -> Assembler ()
+firstPass [] = return ()
+firstPass (Line _ (Mnemonic "BASE" False) _:ls) = do
+  address >>= setBase
+  firstPass ls
+firstPass (l@(Line (Just lbl) _ _):ls) = sizeofLine l >>= either (const $ return ()) f
+  where
+    f size = do
+      setSymbol lbl =<< address
+      advanceAddress size
       firstPass ls
-    Left e -> return $ Left e
+firstPass (l:ls) = do
+  sizeofLine l >>= either (const $ return ()) advanceAddress
+  firstPass ls
+
 --
 -- Second Pass (High Level)
 --
@@ -108,34 +144,16 @@ firstPass (l@(Line lbl _ _):ls) = do
 secondPass :: [Line] -> Assembler (Result [[Word8]])
 secondPass = fmap sequence . mapM assembleLine
 
--- TODO: implement numberOperands (with special concerns for ,X), transforms, and validators
-
--- | Tests if a 'Line' is valid.
-preprocessLine :: Line -> Result Line
-preprocessLine l@(Line lbl (Mnemonic m extended) oprs)
-  | m `elem` ["BYTE", "WORD", "RESB", "RESW", "START", "END", "BASE"] = Right l
-  | otherwise = lookupMnemonic m >>= f
-  where
-    f (OpDesc _ _ fs no xform validator)
-      | not hasEnoughOperands = Left "not enough operands"
-      | (not $ elem 4 fs) && extended = Left "non extensible mnemonic extended"
-     -- | not operandsMatch = Left "invalid operands" -- TODO: fixme?? Might not be needed
-      | otherwise = Right $ Line lbl (Mnemonic m extended) oprs''
-      where
-        hasEnoughOperands = (length oprs) >= no
-        operandsMatch = all (uncurry validator) $ zipWith (,) oprs [0..no - 1] 
-        oprs' = take no oprs
-        oprs''
-          | fromMaybe False $ (< no) <$> idxRegIdx = map xform oprs'
-          | otherwise = map xform $ oprs' ++ (maybe [] pure $ find isIndexingReg oprs)
-          where
-            idxRegIdx = findIndex isIndexingReg oprs
-
+-- TODO: this reports wrong values (for format 3 lines, it can return format 4...)
+-- THIS IS BECAUSE CERTAIN SYMBOLS AREN'T YET IN THE SYMTAB!!!!!!!!!!!!!!!!!!!!!!!!!
+--
+--
 -- | Determine the format of a line of SIC/XE assembler.
 lineFormat :: Line -> Assembler (Result Int)
-lineFormat (Line _ (Mnemonic m extended) oprs) = either (return . Left) f $ lookupMnemonic m
+lineFormat l@(Line _ (Mnemonic m extended) oprs) = either (return . Left) f $ lookupMnemonic m
   where
-    f = (>>= toRes) . findM (valid oprs) . opdescFormats
+    f = (>>= toRes) . fmap t . findM (valid oprs) . opdescFormats
+    t v = traceShow ("format " ++ show v ++ " " ++ show l) v
     toRes mlf = do
       a <- address
       return $ fromM ("invalid line at address: " ++ show a) mlf
@@ -164,7 +182,7 @@ sizeofLine l@(Line _ (Mnemonic m _) oprs) = do
     ds "WORD" [Operand (Left v) OpSimple] = Right 3
     ds "RESB" [Operand (Left n) OpSimple] = Right $ fromIntegral n
     ds "RESW" [Operand (Left n) OpSimple] = Right $ 3 * (fromIntegral n)
-    ds "START" [Operand (Left n) OpSimple] = Right $ fromIntegral n
+    ds "START" [Operand (Left n) OpSimple] = Right $ traceShow ("START LENGTH: " ++ show n) $ fromIntegral n
     ds "END" _ = Right 0
     ds "BASE" _ = Right 0
     ds mp _ = Left $ ('\'':mp) ++ "' is not a directive nor a mnemonic"
@@ -255,10 +273,10 @@ calcDisp :: Address -> Assembler (Result Int)
 calcDisp memoff = do
   a <- fromIntegral <$> address
   mb <- fmap fromIntegral <$> getBase
-  if isPCRelative $ m - a
+  if isPCRelative $ m - a -- actually calculates to 12 when it should be 7...
     then return $ return $ m - a
     else case mb of
-      Nothing -> return $ Left "no base set, using base-relative addressing"
+      Nothing -> return $ Left "no base set, but still using base-relative addressing"
       Just b -> if isBaseRelative $ m - b
                   then return $ return $ m - b
                   else return $ Left "offset not compatible with PC-relative or B-relative"

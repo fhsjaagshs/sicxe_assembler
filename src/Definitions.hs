@@ -17,6 +17,9 @@ import Data.Word
 import Data.Maybe
 import Data.Either
 
+import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HM
+
 accum :: i -> (i -> c) -> AccumulatorT c i Identity () -> [c]
 accum i f acc = res
   where
@@ -48,7 +51,7 @@ data OpDesc = OpDesc {
   opdescFormats :: [Int],
   opdescNumberOperands :: Int,
   opdescOperandTransform :: Operand -> Operand,
-  opdescOperandValidator :: Operand -> Int -> Bool
+  opdescOperandValidators :: HashMap Int (Operand -> Int -> Bool)
 }
 
 sortFormats :: OpDesc -> OpDesc
@@ -93,7 +96,7 @@ singleMemOrImm = packV [isMemoryOrImmediate]
 --
 
 operations :: [OpDesc]
-operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
+operations = accum (OpDesc 0x00 "" [] 0 id mempty) sortFormats $ do
   op "ADD" $ do
     opcode 0x18
     format 3
@@ -109,7 +112,7 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
     opcode 0xB4
     format 2
     numberOperands 1
-    validator $ packV [isRegister] 
+    validator 2 $ packV [isRegister] 
   op "COMP" $ do
     opcode 0x28
     format 3
@@ -151,37 +154,44 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
     opcode 0x00
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "LDB" $ do 
     opcode 0x68
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "LDCH" $ do 
     opcode 0x50
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "LDL" $ do
     opcode 0x08
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "LDS" $ do
     opcode 0x6C
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "LDT" $ do
     opcode 0x74
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "LDX" $ do
     opcode 0x04
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "LPS" $ do
     opcode 0xD0 
     format 3
@@ -213,12 +223,12 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
     opcode 0xA4
     format 2
     transform $ \o -> if isNumber o then decr o else o
-    validator $ packV [isRegister, isNumber]
+    validator 2 $ packV [isRegister, isNumber]
   op "SHIFTR" $ do
     opcode 0xA8
     format 2
     transform $ \o -> if isNumber o then decr o else o
-    validator $ packV [isRegister, isNumber]
+    validator 2 $ packV [isRegister, isNumber]
   op "SIO" $ do
     opcode 0xF0 
     format 1
@@ -230,47 +240,56 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
     opcode 0x0C
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "STB" $ do
     opcode 0x78
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "STCH" $ do
     opcode 0x54
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "STI" $ do
     opcode 0xD4
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "STL" $ do
     opcode 0x14
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "STS" $ do
     opcode 0x7C
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "STSW" $ do
     opcode 0xE8
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "STT" $ do
     opcode 0x84
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "STX" $ do
     opcode 0x10
     format 3
     format 4
-    validator singleMemOrImm
+    validator 3 singleMemOrImm
+    validator 4 singleMemOrImm
   op "SUB" $ do
     opcode 0x1C
     format 3
@@ -282,7 +301,7 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
     opcode 0xB0
     format 2
     numberOperands 1
-    validator $ packV [isNumber]
+    validator 2 $ packV [isNumber]
   op "TD" $ do
     opcode 0xE0
     format 3
@@ -298,7 +317,7 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
     opcode 0xB8
     format 2
     numberOperands 1
-    validator $ packV [isNumber]
+    validator 2 $ packV [isNumber]
   op "WD" $ do
     opcode 0xDC
     format 3
@@ -307,7 +326,7 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
     op m act = mnemonic m >> act >> complete
     opcode o = incomplete $ \(OpDesc _ m fs n f v) -> return $ OpDesc o m fs n f v
     mnemonic m = incomplete $ \(OpDesc o _ fs n f v) -> return $ OpDesc o m fs n f v
-    format fmt = incomplete $ \(OpDesc o m fs _ f _) -> return $ OpDesc o m (fs ++ [fmt]) (getMNumOps fmt) f (getValidator fmt)
+    format fmt = incomplete $ \(OpDesc o m fs _ f v) -> return $ OpDesc o m (fs ++ [fmt]) (getMNumOps fmt) f $ HM.insert fmt (getValidator fmt) v
       where getMNumOps 4 = 1
             getMNumOps 3 = 1
             getMNumOps 2 = 2
@@ -319,7 +338,7 @@ operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
             getValidator 1 = noOperands
             getValidator _ = noOperands
     numberOperands n = incomplete $ \(OpDesc o m fs _ f v) -> return $ OpDesc o m fs n f v
-    validator v = incomplete $ \(OpDesc o m fs n f _) -> return $ OpDesc o m fs n f v
+    validator fmt v = incomplete $ \(OpDesc o m fs n f vs) -> return $ OpDesc o m fs n f $ HM.insert fmt v vs
     transform f = incomplete $ \(OpDesc o m fs n _ v) -> return $ OpDesc o m fs n f v
     decr (Operand (Left v) OpSimple) = Operand (Left $ v - 1) OpSimple
     decr o = o

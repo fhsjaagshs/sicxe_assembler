@@ -5,9 +5,9 @@ FIRST	RESW	1
 .        ADD       #3   
 	RESW	1
         TIO
+        J       OVER
 	RESB	4
 .        +ADD    #OVER
-        J       OVER
         +LDB      @RSLTPTR
         COMP    VALUES,X
 OVER    ADDR    S,T

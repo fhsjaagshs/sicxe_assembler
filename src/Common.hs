@@ -15,7 +15,8 @@ module Common
   fromM,
   fst',
   snd',
-  thd'
+  thd',
+  onJust
 )
 where
 
@@ -59,6 +60,9 @@ safeIdx :: Int -> [a] -> Maybe a
 safeIdx i xs
   | length xs > i = Just $ xs !! i
   | otherwise = Nothing
+
+onJust :: Monad m => (a -> m b) -> Maybe a -> m (Maybe b)
+onJust f = maybe (return Nothing) (fmap Just . f)
 
 -- | Turns an 'Either l r' into a 'Maybe r'. Loses left value.
 toM :: Either l r -> Maybe r
