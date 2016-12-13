@@ -2,13 +2,7 @@
 
 module Assembler
 (
-  assemble,
-  isBaseRelative,
-  isPCRelative,
-  calcDisp,
-  toBits,
-  isBaseRelative,
-  isPCRelative
+  assemble
 )
 where
 
@@ -22,6 +16,7 @@ import Data.Int
 import Data.Bits
 import Data.Bool
 import Data.List
+import Data.Either
 
 import Data.HashMap.Lazy (HashMap)
 import qualified Data.HashMap.Lazy as HM
@@ -153,11 +148,7 @@ lineFormat (Line _ (Mnemonic m extended) oprs) = either (return . Left) f $ look
     valid (x:_)  3
       | extended = return False
       | reqAbs x = return True
-      | otherwise = do
-        addrc <- address
-        addrx <- either (const addrc) id <$> getAddr x
-        let disp = (fromIntegral addrc) - (fromIntegral addrx)
-        return $ disp >= -2048 || disp < 4096
+      | otherwise = isRight <$> (either (return . Left) calcDisp =<< getAddr x)
     valid _      3 = return True
     valid _      4 = return True
     valid _      _ = return False
@@ -192,11 +183,11 @@ assembleLine l@(Line _ (Mnemonic m _) oprs) = do
     mkinstr opc 1 _      = Right <$> format1 opc
     mkinstr opc 2 [a]    = applyResultA2 (format2 opc) (format2Operand a) (Right 0)
     mkinstr opc 2 [a, b] = applyResultA2 (format2 opc) (format2Operand a) (format2Operand b)
-    mkinstr opc 3 [a, b] = getAddr a >>= applyResultA2 (format3 (reqAbs a) opc (getN a) (getI a)) (return $ getX a b)
-    mkinstr opc 3 [a]    = getAddr a >>= applyResultA2 (format3 (reqAbs a) opc (getN a) (getI a)) (return False)
-    mkinstr opc 3 []     = Right <$> format3 True opc True True False 0
-    mkinstr opc 4 [a, b] = getAddr a >>= applyResultA2 (format4 opc (getN a) (getI a)) (return $ getX a b)
-    mkinstr opc 4 [a]    = getAddr a >>= applyResultA2 (format4 opc (getN a) (getI a)) (return False)
+    mkinstr opc 3 [a, b] = either (return . Left) (format3 (reqAbs a) opc (getN a) (getI a) (getX a b)) =<< getAddr a
+    mkinstr opc 3 [a]    = either (return . Left) (format3 (reqAbs a) opc (getN a) (getI a) False) =<< getAddr a
+    mkinstr opc 3 []     = format3 True opc True True False 0
+    mkinstr opc 4 [a, b] = bindResultM (format4 opc (getN a) (getI a) (getX a b)) $ getAddr a
+    mkinstr opc 4 [a]    = bindResultM (format4 opc (getN a) (getI a) False) $ getAddr a
     mkinstr opc 4 []     = Right <$> format4 opc True True False 0
     mkdirec "BYTE" [Operand (Left v) OpImmediate] = Right <$> byte v
     mkdirec "WORD" [Operand (Left v) OpSimple] = Right <$> word v
@@ -242,20 +233,22 @@ getI a = isType OpImmediate a || isType OpSimple a
 getN :: Operand -> Bool
 getN a = isType OpIndirect a || isType OpSimple a
 
+-- TODO: fixme: 5 too high on 
 -- | Calculates the address displacement given
 -- the start of the current instruction (@addr@)
 -- and the offset to calc displacement for @memoff@
-calcDisp :: Address -> Address -> Address -> Maybe Int
-calcDisp base addr memoff =
-  if isPCRelative $ adjust + m - a
-    then Just $ adjust + m - a
-    else if isBaseRelative $ m - b
-        then Just $ m - b
-        else Nothing
+calcDisp :: Address -> Assembler (Result Int)
+calcDisp memoff = do
+  a <- fromIntegral <$> address
+  mb <- fmap fromIntegral <$> getBase
+  if isPCRelative $ m - a
+    then return $ return $ m - a
+    else case mb of
+      Nothing -> return $ Left "no base set, using base-relative addressing"
+      Just b -> if isBaseRelative $ m - b
+                  then return $ return $ m - b
+                  else return $ Left "offset not compatible with PC-relative or B-relative"
   where m = fromIntegral memoff
-        a = fromIntegral addr
-        b = fromIntegral base
-        adjust = -3
 
 isPCRelative :: (Ord a, Num a) => a -> Bool
 isPCRelative v = v >= -2048 && v <= 2048
@@ -311,22 +304,20 @@ format2 :: Word8 -> Word8 -> Word8 -> Assembler [Word8]
 format2 op a b = [op, shiftL a 4 .|. b] <$ advanceAddress 2
 
 -- | Assembles a Format 3 instruction.
-format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
-format3 True op n i x memoff = return $ packBits $ prefix ++ (toWordN 12 memoff)
+format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler (Result [Word8])
+format3 True op n i x memoff = return $ Right $ packBits $ prefix ++ (toWordN 12 memoff)
   where prefix = format34DRY op n i x False False False
-format3 False op n i x memoff = do
-  addr <- address
-  base <- fromMaybe 10000 <$> getBase
- 
-  let disp = fromMaybe 10000 $ calcDisp base addr memoff
-  let b = isBaseRelative disp
-      p = isPCRelative disp
-      prefix = format34DRY op n i x b p False
-  if b || p
-    then do
-      advanceAddress 3
-      return $ packBits $ prefix ++ (toWordN 12 disp)
-    else format4 op n i x memoff
+format3 False op n i x memoff = bindResultM f (calcDisp memoff)
+  where
+    f disp = do
+      let b = isBaseRelative disp
+          p = isPCRelative disp
+          prefix = format34DRY op n i x b p False
+      if b || p
+      then do
+        advanceAddress 3
+        return $ packBits $ prefix ++ (toWordN 12 disp)
+      else format4 op n i x memoff
 
 -- | Assembles a Format 4 instruction
 format4 :: Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
