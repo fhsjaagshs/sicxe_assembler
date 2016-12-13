@@ -5,9 +5,12 @@ module Assembler
   assemble,
   isBaseRelative,
   isPCRelative,
-  calcDisp
+  calcDisp,
+  toBits
 )
 where
+
+import Debug.Trace
 
 import Common
 import Parser
@@ -51,13 +54,13 @@ address = fst' <$> get
 
 -- | Set the current address 
 setAddress :: Address -> Assembler ()
-setAddress addr = state $ \(_, st, b) -> ((), (addr, st, b))
+setAddress addr = state $ \(_, st, b) -> trace "SETADDR" ((), (addr, st, b))
 
 getBase :: Assembler (Maybe Address)
 getBase = thd' <$> get
 
 setBase :: Address -> Assembler ()
-setBase a = state $ \(addr, st, b) -> ((), (addr, st, b <|> Just a))
+setBase a = state $ \(addr, st, b) -> trace "SETBASE" ((), (addr, st, b <|> Just a))
 
 -- | Set the current address to the start of the program.
 -- Use this instead of @setAddress 0@ because 'Assembler'
@@ -93,8 +96,12 @@ firstPass [] = return $ Right ()
 firstPass (Line _ (Mnemonic "BASE" False) _:ls) = (address >>= setBase) >> firstPass ls
 firstPass (l@(Line lbl _ _):ls) = do
   applyResultA (\s -> setSymbol s =<< address) $ fromM "" lbl
-  sizeofLine l >>= applyResultA ((>> return ()) . (>> firstPass ls) . advanceAddress)
-
+  lsz <- sizeofLine l
+  case lsz of
+    Right v -> do
+      advanceAddress v
+      firstPass ls
+    Left e -> return $ Left e
 --
 -- Second Pass (High Level)
 --
@@ -238,20 +245,17 @@ getN a = isType OpIndirect a || isType OpSimple a
 -- and the offset to calc displacement for @memoff@
 calcDisp :: Address -> Assembler (Maybe Int)
 calcDisp memoff = do
-  addr <- fromIntegral <$> address 
-  diff <- adjust $ m - addr
-  if False && isPCRelative diff
-    then return $ Just $ diff
+  addr <- fromIntegral <$> address
+  let adjust = -3
+  if isPCRelative $ adjust + m - addr
+    then return $ Just $ adjust + m - addr
     else do
       b <- maybe maxBound fromIntegral <$> getBase
       if isBaseRelative $ m - b
         then return $ Just $ m - b
         else return Nothing
-  where
-    m = fromIntegral memoff
-    adjust v = do
-      addr <- address
-      return (if v >= 0 then v + 3 else v) -- if memoff > addr, then it's necessary to skip over the instruction.
+  where m = fromIntegral memoff
+        signbit = (finiteBitSize (undefined :: Int)) - 1
 
 isPCRelative :: (Ord a, Num a) => a -> Bool
 isPCRelative v = v >= -2048 && v < 2048
@@ -276,9 +280,8 @@ format2Operand (Operand v _) = Left $ "Operand '" ++ either show id v ++ "' is n
 
 -- | Assembles a 24-bit word constant
 word :: Integer -> Assembler [Word8]
-word i = do
-  advanceAddress 3
-  return $ packBits $ reverse $ take 24 $ toBits ((fromIntegral i) :: Word32)
+word i = (packBits $ toWordN 24 w) <$ advanceAddress 3
+  where w = ((fromIntegral i) :: Word32)
 
 -- | Assembles a binary constant
 byte :: Integer -> Assembler [Word8]
@@ -311,13 +314,16 @@ format2 op a b = [op, shiftL a 4 .|. b] <$ advanceAddress 2
 format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
 format3 absolute op n i x memoff = do
   addr <- address
-  disp <- fromIntegral . fromMaybe 5000 <$> calcDisp memoff -- 5000 is longer than any offset.
+  
+  disp <- fromMaybe 10000 <$> calcDisp memoff -- 10000 is longer than any valid relative offset * 2.
   let (b, p) = getBP addr memoff disp absolute 
   if b || p || absolute
-    then getBytes b p addr disp <$ advanceAddress 3
+    then do
+      advanceAddress 3
+      return $ getBytes b p addr (traceShowId $ fromIntegral disp)
     else format4 op n i x memoff
   where
-    getBytes b p addr boff = packBits $ (++) prefix $ toWordN 12 disp
+    getBytes b p addr boff = packBits $ (++) prefix $ toWordN 12 (disp :: Word32)
       where disp = bool boff memoff absolute
             prefix = format34DRY op n i x b p False
     getBP _ off _ True = (False, False)
