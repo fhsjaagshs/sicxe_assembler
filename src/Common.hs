@@ -12,7 +12,10 @@ module Common
   showHex,
   hPutBytes,
   toM,
-  fromM
+  fromM,
+  fst',
+  snd',
+  thd'
 )
 where
 
@@ -114,3 +117,11 @@ showHex = mconcat . map toPair
 hPutBytes :: Handle -> [Word8] -> IO ()
 hPutBytes hdl bytes = withArray bytes (flip (hPutBuf hdl) (length bytes))
 
+fst' :: (a, b, c) -> a
+fst' (a, _, _) = a
+
+snd' :: (a, b, c) -> b
+snd' (_, b, _) = b
+
+thd' :: (a, b, c) -> c
+thd' (_, _, c) = c

@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Assembler
 (
@@ -9,12 +9,11 @@ module Assembler
 )
 where
 
-import Debug.Trace
-
 import Common
 import Parser
 import Definitions
 import Data.Word
+import Data.Int
 import Data.Bits
 import Data.Bool
 import Data.List
@@ -40,19 +39,25 @@ assemble = (=<<) f . mapM preprocessLine
 
 type Address = Word32 -- | 1MB Address
 type SymbolTable = HashMap String Address -- | Symbol table
-type Assembler a = State (Address, SymbolTable) a -- | Assembler monad
+type Assembler a = State (Address, SymbolTable, Maybe Address) a -- | Assembler monad
 
 -- | Run your assembler.
 runAssembler :: Address -> SymbolTable -> Assembler a -> a
-runAssembler a st ass = evalState ass (a, st)
+runAssembler a st ass = evalState ass (a, st, Nothing)
 
 -- | Get the current address.
 address :: Assembler Address
-address = fst <$> get
+address = fst' <$> get
 
 -- | Set the current address 
 setAddress :: Address -> Assembler ()
-setAddress addr = state $ \(_, st) -> ((), (addr, st))
+setAddress addr = state $ \(_, st, b) -> ((), (addr, st, b))
+
+getBase :: Assembler (Maybe Address)
+getBase = thd' <$> get
+
+setBase :: Address -> Assembler ()
+setBase a = state $ \(addr, st, b) -> ((), (addr, st, b <|> Just a))
 
 -- | Set the current address to the start of the program.
 -- Use this instead of @setAddress 0@ because 'Assembler'
@@ -66,11 +71,11 @@ advanceAddress by = address >>= setAddress . (+) by
 
 -- | The symbol table.
 symbolTable :: Assembler SymbolTable
-symbolTable = snd <$> get
+symbolTable = snd' <$> get
 
 -- | Sets a symbol in the symbol table
 setSymbol :: String -> Address -> Assembler ()
-setSymbol sym a = state $ \(addr, st) -> ((), (addr, HM.insert sym a st))
+setSymbol sym a = state $ \(addr, st, b) -> ((), (addr, HM.insert sym a st, b))
 
 -- | Gets a symbol from the symbol table
 getSymbol :: String -> Assembler (Result Address)
@@ -85,6 +90,7 @@ getSymbol sym = fromM err . HM.lookup sym <$> symbolTable
 -- the labels and recording them in the symtab.
 firstPass :: [Line] -> Assembler (Result ())
 firstPass [] = return $ Right ()
+firstPass (Line _ (Mnemonic "BASE" False) _:ls) = (address >>= setBase) >> firstPass ls
 firstPass (l@(Line lbl _ _):ls) = do
   applyResultA (\s -> setSymbol s =<< address) $ fromM "" lbl
   sizeofLine l >>= applyResultA ((>> return ()) . (>> firstPass ls) . advanceAddress)
@@ -230,8 +236,22 @@ getN a = isType OpIndirect a || isType OpSimple a
 -- | Calculates the address displacement given
 -- the start of the current instruction (@addr@)
 -- and the offset to calc displacement for @memoff@
-calcDisp :: Num a => a -> a -> a
-calcDisp addr memoff = memoff - (addr + 3) -- +3 comes from the fact that displacement is only used with format 3 instructions
+calcDisp :: Address -> Assembler (Maybe Int)
+calcDisp memoff = do
+  addr <- fromIntegral <$> address 
+  diff <- adjust $ m - addr
+  if False && isPCRelative diff
+    then return $ Just $ diff
+    else do
+      b <- maybe maxBound fromIntegral <$> getBase
+      if isBaseRelative $ m - b
+        then return $ Just $ m - b
+        else return Nothing
+  where
+    m = fromIntegral memoff
+    adjust v = do
+      addr <- address
+      return (if v >= 0 then v + 3 else v) -- if memoff > addr, then it's necessary to skip over the instruction.
 
 isPCRelative :: (Ord a, Num a) => a -> Bool
 isPCRelative v = v >= -2048 && v < 2048
@@ -291,18 +311,19 @@ format2 op a b = [op, shiftL a 4 .|. b] <$ advanceAddress 2
 format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
 format3 absolute op n i x memoff = do
   addr <- address
-  let (b, p) = getBP addr memoff absolute 
+  disp <- fromIntegral . fromMaybe 5000 <$> calcDisp memoff -- 5000 is longer than any offset.
+  let (b, p) = getBP addr memoff disp absolute 
   if b || p || absolute
-    then getBytes b p addr <$ advanceAddress 3
+    then getBytes b p addr disp <$ advanceAddress 3
     else format4 op n i x memoff
   where
-    getBytes b p addr = packBits $ (++) prefix $ toWordN 12 disp
-      where disp = bool (calcDisp addr memoff) memoff absolute
+    getBytes b p addr boff = packBits $ (++) prefix $ toWordN 12 disp
+      where disp = bool boff memoff absolute
             prefix = format34DRY op n i x b p False
-    getBP _ off True = (False, False)
-    getBP addr off False = (b, p)
-      where b = not p && (isBaseRelative $ calcDisp addr off)
-            p = isPCRelative $ calcDisp (fromIntegral addr) (fromIntegral off)
+    getBP _ off _ True = (False, False)
+    getBP addr boff off False = (p, b)
+      where b = not p && isBaseRelative boff
+            p = isPCRelative boff
 
 -- | Assembles a Format 4 instruction
 format4 :: Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]

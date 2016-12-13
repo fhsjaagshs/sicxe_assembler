@@ -9,5 +9,6 @@ FIRST      STL          NINE         SAVE RETURN ADDRESS
            J            @NINE        RETURN TO CALLER
            RSUB                         RETURN TO CALLER
 	SHIFTL	A,4
+	RESB	5000
 	COMP	VALUES,X
 	LDA	#8
