@@ -118,7 +118,7 @@ preprocessLine l@(Line lbl (Mnemonic m extended) oprs)
         oprs''
           | hasIndexingOp oprs && hasIndexingOp oprs' = oprs'
           | otherwise = oprs' ++ (maybe [] pure $ find isIndexingReg oprs)
-        hasIndexingOp = (==) 1 . length . findIndeces isIndexingReg
+        hasIndexingOp = (==) 1 . length . findIndices isIndexingReg
 
 -- | Determine the format of a line of SIC/XE assembler.
 lineFormat :: Line -> Assembler (Result Int)
