@@ -95,11 +95,12 @@ firstPass (l@(Line lbl _ _):ls) = do
 secondPass :: [Line] -> Assembler (Result [[Word8]])
 secondPass = fmap sequence . mapM assembleLine
 
+-- TODO: implement numberOperands (with special concerns for ,X), transforms, and validators
+
 -- | Determine the format of a line of SIC/XE assembler.
 lineFormat :: Line -> Assembler (Result Int)
 lineFormat (Line _ (Mnemonic m extended) oprs) = either (return . Left) f $ lookupMnemonic m
   where
-    f :: OpDesc -> Assembler (Result Int)
     f = (>>= toRes) . findM (valid oprs) . opdescFormats
     toRes mlf = do
       a <- address

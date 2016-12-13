@@ -7,6 +7,9 @@ module Definitions
 )
 where
 
+import Common
+import Parser
+
 import AccumulatorT
 import Data.Functor.Identity
 import Data.List
@@ -41,13 +44,44 @@ data OpDesc = OpDesc {
   opdescOpcode :: Word8,
   opdescMnemonic :: String,
   opdescFormats :: [Int]
+  opdescNumberOperands :: Int
+  opdescOperandTransform :: Operand -> Operand
+  opdescOperandValidator :: Operand -> Int -> Bool
 } deriving (Eq, Show)
 
 sortFormats :: OpDesc -> OpDesc
-sortFormats (OpDesc o m fs) = OpDesc o m (sort fs)
+sortFormats o = o { opdescFormats = (sort $ opdescFormats o) }
+
+--
+-- OpDesc operand validators
+--
+
+isRegister :: Operand -> Bool
+isRegister (Operand (Right ident) OpSimple) = isJust $ lookup ident registers
+isRegister _                                = False
+
+isMemory :: Operand -> Bool
+isMemory o@(Operand v _) = isRight v && not (isRegister o)
+
+isNumber :: Operand -> Bool
+isNumber (Operand (Left _) OpSimple) = True
+isNumber _                           = False
+
+packV :: [Operand -> Bool] -> Operand -> Int -> Bool
+packV xs op i = maybe False ($ op) safeIdx xs
+
+singleMemory :: Operand -> Int -> Bool
+singleMemory = packV [isMemory]
+
+twoRegisters :: Operand -> Int -> Bool
+twoRegisters = packV [isRegister, isRegister]
+
+--
+-- Operation Declarations
+--
 
 operations :: [OpDesc]
-operations = accum (OpDesc 0x00 "" []) sortFormats $ do
+operations = accum (OpDesc 0x00 "" [] 0 id (\_ _ -> True)) sortFormats $ do
   op "ADD" $ do
     opcode 0x18
     format 3
@@ -62,6 +96,8 @@ operations = accum (OpDesc 0x00 "" []) sortFormats $ do
   op "CLEAR" $ do
     opcode 0xB4
     format 2
+    numberOperands 1
+    validator $ packV [isRegister] 
   op "COMP" $ do
     opcode 0x28
     format 3
@@ -69,6 +105,7 @@ operations = accum (OpDesc 0x00 "" []) sortFormats $ do
   op "COMPR" $ do
     opcode 0xA0
     format 2
+    validator $ 
   op "DIV" $ do
     opcode 0x24
     format 3
@@ -156,9 +193,13 @@ operations = accum (OpDesc 0x00 "" []) sortFormats $ do
   op "SHIFTL" $ do
     opcode 0xA4
     format 2
+    transform $ \o -> if isNumber o then decr o else o
+    validator $ packV [isRegister, isNumber]
   op "SHIFTR" $ do
     opcode 0xA8
     format 2
+    transform $ \o -> if isNumber o then decr o else o
+    validator $ packV [isRegister, isNumber]
   op "SIO" $ do
     opcode 0xF0 
     format 1
@@ -212,6 +253,8 @@ operations = accum (OpDesc 0x00 "" []) sortFormats $ do
   op "SVC" $ do
     opcode 0xB0
     format 2
+    numberOperands 1
+    validator $ packV [isNumber]
   op "TD" $ do
     opcode 0xE0
     format 3
@@ -226,13 +269,29 @@ operations = accum (OpDesc 0x00 "" []) sortFormats $ do
   op "TIXR" $ do
     opcode 0xB8
     format 2
+    numberOperands 1
+    validator $ packV [isNumber]
   op "WD" $ do
     opcode 0xDC
     format 3
     format 4
   where
     op m act = mnemonic m >> act >> complete
-    opcode o = incomplete $ \(OpDesc _ m fs) -> return $ OpDesc o m fs
-    mnemonic m = incomplete $ \(OpDesc o _ fs) -> return $ OpDesc o m fs
-    format f = incomplete $ \(OpDesc o m fs) -> return $ OpDesc o m (fs ++ [f])
-
+    opcode o = incomplete $ \(OpDesc _ m fs n f v) -> return $ OpDesc o m fs n f v
+    mnemonic m = incomplete $ \(OpDesc o _ fs n f v) -> return $ OpDesc o m fs n f v
+    format fmt = incomplete $ \(OpDesc o m fs _ f _) -> return $ OpDesc o m (fs ++ [fmt]) (getMNumOps fmt) f (getValidator fmt)
+      where getMNumOps 4 = 1
+            getMNumOps 3 = 1
+            getMNumOps 2 = 2
+            getMNumOps 1 = 0
+            getMNumOps _ = 0
+            getValidator 4 = singleMemory
+            getValidator 3 = singleMemory
+            getValidator 2 = twoRegisters
+            getValidator 1 = noOperands
+            getValidator _ = noOperands
+    numberOperands n = incomplete $ \(OpDesc o m fs _ f v) -> return $ OpDesc o m fs n f v
+    validator v = incomplete $ \OpDesc o m fs n f _ -> return $ OpDesc o m fs n f v
+    transform f = incomplete $ \OpDesc o m fs n _ v -> return $ OpDesc o m fs n f v
+    decr (Operand (Left v) OpSimple) = Operand (Left $ v - 1) OpSimple
+    decr o = o

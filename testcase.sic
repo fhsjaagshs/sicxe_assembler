@@ -1,7 +1,10 @@
 	RESB	9
-NINE	RESB	9
+NINE	RESB	9	this is broken
 	COMP	VALUES,X
 	BASE	NINE
     . this is a comment
 	RESB	16
 VALUES	BYTE	C'WEMADEIT'
+FIRST      STL          NINE         SAVE RETURN ADDRESS
+   .        J            @NINE        RETURN TO CALLER
+ .          RSUB                         RETURN TO CALLER
