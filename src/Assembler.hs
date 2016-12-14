@@ -124,8 +124,9 @@ preprocessLine l@(Line lbl (Mnemonic m ext) oprs)
 -- the labels and recording them in the symtab.
 firstPass :: [Line] -> Assembler ()
 firstPass [] = return ()
-firstPass (Line _ (Mnemonic "BASE" False) _:ls) = do
-  address >>= setBase
+firstPass ((Line _ (Mnemonic "BASE" False) [a]):ls) = do
+  
+  bindResultM setBase $ getAddr a
   firstPass ls
 firstPass (l@(Line mlbl _ _):ls) = do
   maybe (return ()) (act mlbl) $ sizeofLine l
@@ -173,7 +174,7 @@ sizeofLine l@(Line _ (Mnemonic m _) oprs) = (fromIntegral <$> lineFormat l) <|> 
 -- | Assembles a line of SIC/XE ASM as parsed by Parser.
 -- Returns a list of bytes in Big Endian order and the next address.
 assembleLine :: Line -> Assembler (Result [Word8])
-assembleLine l@(Line _ (Mnemonic m _) oprs) = g $ (,) <$> lf <*> lookupMnemonic m
+assembleLine l@(Line _ (Mnemonic m _) oprs) = traceShow l $ g $ (,) <$> lf <*> lookupMnemonic m
   where
     lf = fromM "invalid line" $ lineFormat l
     g (Right (f, o)) = mkinstr (opdescOpcode o) f oprs
@@ -260,7 +261,7 @@ calcDisp m = do
       Nothing -> return $ Left "no base set, but still using base-relative addressing"
       Just b -> if isBaseRelative $ m `minus` b
                   then return $ return $ (True, toWordN 12 $ m `minus` b)
-                  else return $ Left "offset not compatible with PC-relative or B-relative"
+                  else return $ Left ("offset (" ++ show m ++ ") not compatible with PC-relative or B-relative")
 minus a b
   | a >= b = a - b
   | otherwise = (complement (b - a)) + 1
@@ -268,7 +269,7 @@ isPCRelative v
   | testBit v sidx = isPCRelative $ 1 + complement v
   | otherwise = v <= (0xFFF `shiftR` 1)
   where sidx = (finiteBitSize v) - 1
-isBaseRelative v = v > (0xFFF `shiftR` 1) && v <= 0xFFF
+isBaseRelative v = v >= 0 && v <= 0xFFF
 
 toWordNS n w = msb:toWordN (n - 1) w
   where msb = testBit w $ (finiteBitSize w) - 1

@@ -1,0 +1,11 @@
+        +J      BEGIN
+ARY     RESB    4096
+VALUE   RESW    1
+BEGIN   LDS     VALUE
+        LDT     #8
+        DIVR    T,S
+        +LDB    #ARY
+        BASE    ARY
+        RMO     S,A
+        LDX     #7
+        STCH    ARY,X
