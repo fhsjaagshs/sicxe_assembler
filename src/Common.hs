@@ -1,4 +1,7 @@
-{-# LANGUAGE MagicHash #-}
+{-|
+Module: Common
+Description: General functions used by other modules.
+-}
 
 module Common
 (

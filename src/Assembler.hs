@@ -1,3 +1,8 @@
+{-|
+Module: Assembler
+Description: Assemble data structures from Parser into object code.
+-}
+
 module Assembler
 (
   assemble

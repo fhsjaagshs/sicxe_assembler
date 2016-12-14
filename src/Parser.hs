@@ -1,9 +1,6 @@
 {-|
 Module: Parser
 Description: Parse SIC/XE syntax
-License: Don't kill people, mmmmkay?
-Maintainer: nate@symer.io
-
 -}
 
 {-# LANGUAGE OverloadedStrings #-}
