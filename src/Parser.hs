@@ -3,8 +3,6 @@ Module: Parser
 Description: Parse SIC/XE syntax
 -}
 
-{-# LANGUAGE OverloadedStrings #-}
-
 module Parser
 (
   Line(..),

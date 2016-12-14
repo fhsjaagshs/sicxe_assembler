@@ -1,3 +1,8 @@
+{-|
+Module: Definitions
+Description: Definites instruction sets for use with Assembler
+-}
+
 module Definitions
 (
   OpDesc(..),
@@ -19,11 +24,13 @@ import Data.Maybe
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HM
 
+-- | Simple DRY to make running an AccumulatorT less annoying.
 accum :: i -> (i -> c) -> AccumulatorT c i Identity () -> [c]
 accum i f acc = res
   where
     (_, res, _) = runIdentity $ evalAccumulatorT acc (return . f) (return i)
 
+-- | Instruction set's registers
 registers :: [(String, Word8)]
 registers  = accum ("", 0) id $ do
   register 0 "A"
@@ -40,10 +47,12 @@ registers  = accum ("", 0) id $ do
 -- NOTE: I wish there were a more abstract way to
 -- define this behavior so that this module doesn't
 -- limit the assembler to only being able to assemble
--- an assembly language with an indexing register.
+-- an instruction set with an indexing register.
 indexingRegister :: (String, Word8)
 indexingRegister = ("X", 1)
 
+-- | Description of an operation. Includes information
+-- about mnemonics & operands.
 data OpDesc = OpDesc {
   opdescOpcode :: Word8,
   opdescMnemonic :: String,
@@ -53,8 +62,13 @@ data OpDesc = OpDesc {
   opdescOperandValidators :: HashMap Int (Operand -> Int -> Bool)
 }
 
+-- | Sort an 'OpDesc''s formats (Assembler.hs expects this).
 sortFormats :: OpDesc -> OpDesc
 sortFormats o = o { opdescFormats = (sort $ opdescFormats o) }
+
+-- | Makes an 'Operand' validator from a list of prediates.
+packV :: [Operand -> Bool] -> Operand -> Int -> Bool
+packV xs op i = maybe False ($ op) (safeIdx i xs)
 
 --
 -- OpDesc operand validators
@@ -74,9 +88,6 @@ isMemoryOrImmediate (Operand (Left _) t) = t == OpImmediate
 isNumber :: Operand -> Bool
 isNumber (Operand (Left _) OpSimple) = True
 isNumber _                           = False
-
-packV :: [Operand -> Bool] -> Operand -> Int -> Bool
-packV xs op i = maybe False ($ op) (safeIdx i xs)
 
 singleMemory :: Operand -> Int -> Bool
 singleMemory = packV [isMemory]
