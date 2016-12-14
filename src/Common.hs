@@ -6,7 +6,6 @@ module Common
   bytesToInteger,
   integerToBytes,
   safeIdx,
-  findM,
   bindResultM,
   applyResultA,
   applyResultA2,
@@ -17,8 +16,7 @@ module Common
   fromM,
   fst',
   snd',
-  thd',
-  onJust
+  thd'
 )
 where
 
@@ -27,10 +25,7 @@ import Data.Word
 import Data.Char
 import Data.List
 
-import Data.Foldable
-
 import Foreign.Marshal.Array
-
 import System.IO
 
 type Result a = Either String a
@@ -48,7 +43,6 @@ bytesToInteger = f 0 (0 :: Integer)
 integerToBytes :: Integer -> [Word8]
 integerToBytes = unfoldr popByte
   where
-    popByte :: Integer -> Maybe (Word8, Integer)
     popByte 0 = Nothing
     popByte i = Just ((fromIntegral a), b)
       where (b, a) = quotRem i 256
@@ -59,9 +53,6 @@ safeIdx i xs
   | length xs > i = Just $ xs !! i
   | otherwise = Nothing
 
-onJust :: Monad m => (a -> m b) -> Maybe a -> m (Maybe b)
-onJust f = maybe (return Nothing) (fmap Just . f)
-
 -- | Turns an 'Either l r' into a 'Maybe r'. Loses left value.
 toM :: Either l r -> Maybe r
 toM = either (const Nothing) Just
@@ -69,14 +60,6 @@ toM = either (const Nothing) Just
 -- | Turns a 'Maybe r' into an either, providing @l@ on 'Nothing'.
 fromM :: l -> Maybe r -> Either l r
 fromM l = maybe (Left l) Right
-
--- | Monadic version of 'find'.
-findM :: (Monad m, Foldable t) => (a -> m Bool) -> t a -> m (Maybe a)
-findM f = foldlM findf Nothing
-  where findf Nothing a = do
-          b <- f a
-          return $ if b then Just a else Nothing
-        findf (Just a) _ = return $ Just a
 
 -- | Apply a binary monadic function over two results.
 applyResultA2 :: (Applicative m) => (a -> b -> m c) -> Result a -> Result b -> m (Result c)

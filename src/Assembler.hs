@@ -6,8 +6,6 @@ module Assembler
 )
 where
 
-import Debug.Trace
-
 import Common
 import Parser
 import Definitions
@@ -100,10 +98,9 @@ preprocessLine l@(Line lbl (Mnemonic m ext) oprs)
       | not operandsMatch = Left "invalid operands" -- TODO: fixme?? Might not be needed
       | otherwise = Right $ Line lbl (Mnemonic m ext) oprs''
       where
-        validator = fromMaybe (\_ _ -> True) $ lineFormat l >>= flip HM.lookup vs . t
-        t lf = trace ("line format " ++ show lf ++ ": " ++ show l) lf
+        validator = fromMaybe (\_ _ -> True) $ lineFormat l >>= flip HM.lookup vs
         hasEnoughOperands = (length oprs) >= no
-        operandsMatch = all id $ traceShowId $ map (uncurry validator) $ zipWith (,) oprs [0..no - 1] 
+        operandsMatch = all (uncurry validator) $ zipWith (,) oprs [0..no - 1] 
         oprs' = take no oprs
         oprs''
           | fromMaybe False ((< no) <$> idxRegIdx) = map xform oprs'
