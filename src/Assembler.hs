@@ -8,10 +8,6 @@ module Assembler
 )
 where
 
-import Debug.Trace
-
-import GHC.Prim
-
 import Common
 import Parser
 import Definitions
@@ -40,8 +36,7 @@ assemble = (=<<) f . mapM preprocessLine
       resetAddress
       firstPass ls
       resetAddress
-      st <- symbolTable
-      secondPass $ traceShow st $ ls
+      secondPass ls
 
 type Address = Word32 -- | 1MB Address
 type SymbolTable = HashMap String Address -- | Symbol table
@@ -253,7 +248,7 @@ calcDisp :: Address -> Assembler (Result (Bool, [Bool]))
 calcDisp m = do
   a <- (+ 3) <$> address
   mb <- getBase
-  if traceShow (show a ++ " - "  ++ show mb) $ isPCRelative $ m `minus` a
+  if isPCRelative $ m `minus` a
     then return $ return $ (False, toWordNS 12 $ m `minus` a)
     else case mb of
       Nothing -> return $ Left "no base set, but still using base-relative addressing"
