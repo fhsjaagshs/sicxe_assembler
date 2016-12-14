@@ -1,5 +1,3 @@
-{-# LANGUAGE ScopedTypeVariables, BangPatterns #-}
-
 module Assembler
 (
   assemble
@@ -24,16 +22,15 @@ assemble :: [Line] -> Result [[Word8]]
 assemble = (=<<) f . mapM preprocessLine
   where
     f ls = runAssembler 0 mempty $ do
-      resetAddress
       firstPass ls
-      resetAddress
+      setAddress 0
       secondPass ls
 
 type Address = Word32 -- | 1MB Address
 type SymbolTable = HashMap String Address -- | Symbol table
 type Assembler a = State (Address, SymbolTable, Either String (Maybe Address)) a -- | Assembler monad
 
--- | Run your assembler.
+-- | Run an assembler monad.
 runAssembler :: Address -> SymbolTable -> Assembler a -> a
 runAssembler a st ass = evalState ass (a, st, Right Nothing)
 
@@ -55,15 +52,14 @@ getBase = f . thd' =<< get
 setBase :: Address -> Assembler ()
 setBase a = state $ \(addr, st, _) -> ((), (addr, st, Right $ Just a))
 
+-- | Set the base address to a value from the parser.
+-- If it's an integer, it immediately sets the base.
+-- Otherwise, it stores an identifier to look up later.
+-- This is so that the base directive can reference
+-- labels farther down in the source code.
 setBaseValue :: Either Integer String -> Assembler ()
 setBaseValue (Left i) = setBase $ fromIntegral i
 setBaseValue (Right v) = state $ \(addr, st, _) -> ((), (addr, st, Left v))
-
--- | Set the current address to the start of the program.
--- Use this instead of @setAddress 0@ because 'Assembler'
--- may change to support START and END better.
-resetAddress :: Assembler ()
-resetAddress = setAddress 0
 
 -- | Advance the current address by @by@
 advanceAddress :: Address -> Assembler ()
@@ -86,7 +82,11 @@ getSymbol sym = fromM err . HM.lookup sym <$> symbolTable
 -- Preprocessing
 --
 
--- | Tests if a 'Line' is valid.
+-- | Preprocesses line using Definitions.hs:
+-- 1. Validates extended attribute
+-- 2. Validates number of operands, truncating if necessary
+-- 3. Validates each operand after truncation
+-- 4. Applies transforms to each operand.
 preprocessLine :: Line -> Result Line
 preprocessLine l@(Line lbl (Mnemonic m ext) oprs)
   | m `elem` ["BYTE", "WORD", "RESB", "RESW", "START", "END", "BASE"] = Right l
@@ -95,7 +95,7 @@ preprocessLine l@(Line lbl (Mnemonic m ext) oprs)
     f (OpDesc _ _ fs no xform vs)
       | not hasEnoughOperands = Left "not enough operands"
       | not (elem 4 fs) && ext = Left "non extensible mnemonic extended"
-      | not operandsMatch = Left "invalid operands" -- TODO: fixme?? Might not be needed
+      | not operandsMatch = Left "invalid operands"
       | otherwise = Right $ Line lbl (Mnemonic m ext) oprs''
       where
         validator = fromMaybe (\_ _ -> True) $ lineFormat l >>= flip HM.lookup vs
@@ -112,12 +112,11 @@ preprocessLine l@(Line lbl (Mnemonic m ext) oprs)
 -- First Pass
 --
 
--- | Does the first pass of assembly, finding all of
--- the labels and recording them in the symtab.
+-- | Reads directives & labels, preparing the assembler
+-- staste to assemble SIC/XE code. Updates symtab & base.
 firstPass :: [Line] -> Assembler ()
 firstPass [] = return ()
 firstPass ((Line _ (Mnemonic "BASE" False) [Operand v OpSimple]):ls) = do
-  -- This won't work to set the base to a label after the base directive. 
   setBaseValue v
   firstPass ls
 firstPass (l@(Line mlbl _ _):ls) = do
@@ -131,14 +130,14 @@ firstPass (l@(Line mlbl _ _):ls) = do
 
 --
 -- Second Pass (High Level)
+-- This is the part that handles parser data structures
 --
 
--- | Does the second pass of assembly, assembling
--- all of the lines of assembly code into object code 
+-- | Assembles each line into object code.
 secondPass :: [Line] -> Assembler (Result [[Word8]])
 secondPass = fmap sequence . mapM assembleLine
 
--- | Determine the format of a line of SIC/XE assembler.
+-- | Determine the format of a line of SIC/XE code.
 lineFormat :: Line -> Maybe Int
 lineFormat (Line _ (Mnemonic m ext) oprs) = find (valid oprs) . opdescFormats =<< toM (lookupMnemonic m)
   where
@@ -149,8 +148,7 @@ lineFormat (Line _ (Mnemonic m ext) oprs) = find (valid oprs) . opdescFormats =<
     valid _      4 = True
     valid _      _ = False
 
--- | Determine the size of a line (directive or instruction) of SIC/XE
--- assembler code without accessing the symbol table or assembling code.
+-- | Determine the assembled size of a line of SIC/XE code.
 sizeofLine :: Line -> Maybe Word32
 sizeofLine l@(Line _ (Mnemonic m _) oprs) = (fromIntegral <$> lineFormat l) <|>  ds m oprs
   where
@@ -163,8 +161,8 @@ sizeofLine l@(Line _ (Mnemonic m _) oprs) = (fromIntegral <$> lineFormat l) <|> 
     ds "BASE" _ = Just 0
     ds _ _ = Nothing
 
--- | Assembles a line of SIC/XE ASM as parsed by Parser.
--- Returns a list of bytes in Big Endian order and the next address.
+-- | Assembles a line of SIC/XE code as parsed by Parser.
+-- Returns a list of bytes in Big Endian order.
 assembleLine :: Line -> Assembler (Result [Word8])
 assembleLine l@(Line _ (Mnemonic m _) oprs) = g $ (,) <$> lf <*> lookupMnemonic m
   where
@@ -225,19 +223,22 @@ getI a = isType OpImmediate a || isType OpSimple a
 getN :: Operand -> Bool
 getN a = isType OpIndirect a || isType OpSimple a
 
+-- | Looks up a mnemonic in Definitions.hs
 lookupMnemonic :: String -> Result OpDesc
 lookupMnemonic m = fromM ("invalid mnemonic: " ++ m) $ find ((==) m . opdescMnemonic) operations
 
+-- | Looks up a register in Definitions.hs
 lookupRegister :: String -> Result Word8
 lookupRegister r = fromM ("register doesn't exist: " ++ r) $ lookup r registers
 
--- | Turns an operand into either a register code or its integral value.
+-- | Formats operand to be used in a format 2 instruction.
 format2Operand :: Operand -> Result Word8
 format2Operand (Operand v OpSimple) = either (Right .fromIntegral) lookupRegister v
-format2Operand (Operand v _) = Left $ "Operand '" ++ either show id v ++ "' is not compatible with format 2 mnemonics."
+format2Operand (Operand v _) = Left $ "Operand '" ++ either show id v ++ "' is not compatible with format 2 instructions."
 
 --
 -- Second Pass (Low Level)
+-- Generate object code!!!
 --
 
 -- | Calculates the address displacement from @memoff@ from either
@@ -250,10 +251,10 @@ calcDisp m = do
   if isPCRelative $ m `minus` pc
     then return $ return $ (False, toWordNS 12 $ m `minus` pc)
     else case mb of
-      Nothing -> return $ Left $ "no base set, but still using base-relative addressing (offset " ++ show m ++ ", PC " ++ show pc ++ ", B Nothing"
+      Nothing -> return $ Left $ "using base relative addressing in the absense of a base (PC = " ++ show pc ++ ")"
       Just b -> if isBaseRelative $ m `minus` b
                   then return $ return $ (True, toWordN 12 $ m `minus` b)
-                  else return $ Left ("offset (" ++ show m ++ ") not compatible with PC-relative or B-relative")
+                  else return $ Left ("offset (" ++ show m ++ ") incompatible with PC- or B- relative addressing")
   where
     minus a b
       | a >= b = a - b
