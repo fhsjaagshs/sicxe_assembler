@@ -2,12 +2,7 @@
 
 module Assembler
 (
-  assemble,
-  toBits,
-  toWordNS,
-  minus,
-  isPCRelative,
-  isBaseRelative
+  assemble
 )
 where
 
@@ -17,21 +12,14 @@ import Common
 import Parser
 import Definitions
 import Data.Word
-import Data.Int
 import Data.Bits
-import Data.Bool
 import Data.List
-import Data.Either
 
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HM
 
 import Data.Maybe
-import Data.Foldable
-import Data.Monoid
 import Control.Applicative
-import Control.Monad
-import Control.Monad.Except
 import Control.Monad.State.Strict
 
 assemble :: [Line] -> Result [[Word8]]
@@ -67,11 +55,11 @@ getBase = f . thd' =<< get
 
 -- | Set the base address
 setBase :: Address -> Assembler ()
-setBase a = state $ \(addr, st, b) -> ((), (addr, st, Right $ Just a))
+setBase a = state $ \(addr, st, _) -> ((), (addr, st, Right $ Just a))
 
 setBaseValue :: Either Integer String -> Assembler ()
 setBaseValue (Left i) = setBase $ fromIntegral i
-setBaseValue (Right v) = state $ \(addr, st, b) -> ((), (addr, st, Left v))
+setBaseValue (Right v) = state $ \(addr, st, _) -> ((), (addr, st, Left v))
 
 -- | Set the current address to the start of the program.
 -- Use this instead of @setAddress 0@ because 'Assembler'
@@ -155,7 +143,7 @@ secondPass = fmap sequence . mapM assembleLine
 
 -- | Determine the format of a line of SIC/XE assembler.
 lineFormat :: Line -> Maybe Int
-lineFormat l@(Line _ (Mnemonic m ext) oprs) = find (valid oprs) . opdescFormats =<< toM (lookupMnemonic m)
+lineFormat (Line _ (Mnemonic m ext) oprs) = find (valid oprs) . opdescFormats =<< toM (lookupMnemonic m)
   where
     valid []     1 = True
     valid (x:xs) 2 = and $ map (isType OpSimple) (x:xs)
@@ -170,13 +158,13 @@ sizeofLine :: Line -> Maybe Word32
 sizeofLine l@(Line _ (Mnemonic m _) oprs) = (fromIntegral <$> lineFormat l) <|>  ds m oprs
   where
     ds "BYTE" [Operand (Left v) OpImmediate] = Just $ fromIntegral $ length $ integerToBytes v
-    ds "WORD" [Operand (Left v) OpSimple] = Just 3
+    ds "WORD" [Operand (Left _) OpSimple] = Just 3
     ds "RESB" [Operand (Left n) OpSimple] = Just $ fromIntegral n
     ds "RESW" [Operand (Left n) OpSimple] = Just $ 3 * (fromIntegral n)
     ds "START" [Operand (Left n) OpSimple] = Just $ fromIntegral n
     ds "END" _ = Just 0
     ds "BASE" _ = Just 0
-    ds mp _ = Nothing
+    ds _ _ = Nothing
 
 -- | Assembles a line of SIC/XE ASM as parsed by Parser.
 -- Returns a list of bytes in Big Endian order and the next address.
@@ -186,7 +174,6 @@ assembleLine l@(Line _ (Mnemonic m _) oprs) = g $ (,) <$> lf <*> lookupMnemonic 
     lf = fromM "invalid line" $ lineFormat l
     g (Right (f, o)) = mkinstr (opdescOpcode o) f oprs
     g (Left _)       = mkdirec m oprs
-    mkinstr :: Word8 -> Int -> [Operand] -> Assembler (Result [Word8])
     mkinstr opc 1 _      = Right <$> format1 opc
     mkinstr opc 2 [a]    = applyResultA2 (format2 opc) (format2Operand a) (Right 0)
     mkinstr opc 2 [a, b] = applyResultA2 (format2 opc) (format2Operand a) (format2Operand b)
@@ -196,6 +183,7 @@ assembleLine l@(Line _ (Mnemonic m _) oprs) = g $ (,) <$> lf <*> lookupMnemonic 
     mkinstr opc 4 [a, b] = bindResultM (format4 opc (getN a) (getI a) (getX a b)) $ getAddr a
     mkinstr opc 4 [a]    = bindResultM (format4 opc (getN a) (getI a) False) $ getAddr a
     mkinstr opc 4 []     = Right <$> format4 opc True True False 0
+    mkinstr _   _ _      = return $ Left "invalid instruction"
     mkdirec "BYTE" [Operand (Left v) OpImmediate] = Right <$> byte v
     mkdirec "WORD" [Operand (Left v) OpSimple] = Right <$> word v
     mkdirec "RESB" [Operand (Left n) OpSimple] = Right <$> resb (fromIntegral n)
@@ -203,7 +191,7 @@ assembleLine l@(Line _ (Mnemonic m _) oprs) = g $ (,) <$> lf <*> lookupMnemonic 
     mkdirec "START" [Operand (Left n) OpSimple] = Right <$> start (fromIntegral n)
     mkdirec "END" _ = return $ Right []
     mkdirec "BASE" _ = return $ Right []
-    mkdirec a o = return $ Left $ ('\'':a) ++ "' is not a directive."
+    mkdirec a _ = return $ Left $ ('\'':a) ++ "' is not a directive."
 
 -- | Calculates the absolute address contained in an operand.
 getAddr :: Operand -> Assembler (Result Address)
@@ -269,17 +257,18 @@ calcDisp m = do
       Just b -> if isBaseRelative $ m `minus` b
                   then return $ return $ (True, toWordN 12 $ m `minus` b)
                   else return $ Left ("offset (" ++ show m ++ ") not compatible with PC-relative or B-relative")
-minus a b
-  | a >= b = a - b
-  | otherwise = (complement (b - a)) + 1
-isPCRelative v 
-  | testBit v sidx = isPCRelative $ 1 + complement v
-  | otherwise = v <= (0xFFF `shiftR` 1)
-  where sidx = (finiteBitSize v) - 1
-isBaseRelative v = v >= 0 && v <= 0xFFF
+  where
+    minus a b
+      | a >= b = a - b
+      | otherwise = (complement (b - a)) + 1
+    isPCRelative v 
+      | testBit v sidx = isPCRelative $ 1 + complement v
+      | otherwise = v <= (0xFFF `shiftR` 1)
+      where sidx = (finiteBitSize v) - 1
+    isBaseRelative v = v >= 0 && v <= 0xFFF
 
-toWordNS n w = msb:toWordN (n - 1) w
-  where msb = testBit w $ (finiteBitSize w) - 1
+    toWordNS n w = msb:toWordN (n - 1) w
+      where msb = testBit w $ (finiteBitSize w) - 1
 
 -- | Assembles a 24-bit word constant
 word :: Integer -> Assembler [Word8]
@@ -351,6 +340,6 @@ packBits = unfoldr f
             indeces = [7,6,5,4,3,2,1,0]
             b = sum $ map (uncurry bit') $ zipWith (,) indeces $ fillTo 8 False bits
     bit' i True = bit i
-    bit' i False = zeroBits
+    bit' _ False = zeroBits
     fillTo n d xs = xs' ++ replicate (n - length xs') d
       where xs' = take n xs

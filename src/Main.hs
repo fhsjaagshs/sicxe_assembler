@@ -12,10 +12,10 @@ main :: IO ()
 main = do
   inname <- fromMaybe "main.asm" . safeIdx 0 <$> getArgs
   srclines <- filter (not . isComment) . splitOn "\n" <$> readFile inname
-  let lines = mapM parseLine $ map tokenizeLine srclines
+  let plines = mapM parseLine $ map tokenizeLine srclines
       outname = takeWhile (/= '.') inname ++ ".exe"
-  case lines of
-    Left err -> putStrLn $ "Failed to parse: " ++ err
+  case plines of
+    Left err -> putStrLn $ "failed to parse: " ++ err
     Right lines' -> either (failure inname) (success outname srclines) $ assemble lines'
   where
     failure n err = putStrLn $ "failed to assemble " ++ n ++ ": " ++ err

@@ -2,7 +2,7 @@
 
 module Common
 (
-  Result(..),
+  Result,
   bytesToInteger,
   integerToBytes,
   safeIdx,
@@ -23,16 +23,11 @@ module Common
 where
 
 import Data.Bits
-import Data.Int
 import Data.Word
 import Data.Char
-import Data.Maybe
-import Data.Either
 import Data.List
 
 import Data.Foldable
-import Control.Applicative
-import Control.Monad
 
 import Foreign.Marshal.Array
 
@@ -45,9 +40,9 @@ type Result a = Either String a
 -- size depending), it can be arbitrarily large and hold a
 -- theoretically infinite # of bytes.
 bytesToInteger :: [Word8] -> Integer
-bytesToInteger = f 0 0
+bytesToInteger = f 0 (0 :: Integer)
   where f acc _ [] = acc
-        f acc i (b:bs) = f (acc + ((fromIntegral b) * (256 ^ i))) (i + 1) bs
+        f acc i (b:bs) = f (acc + ((toInteger b) * (256 ^ i))) (i + 1) bs
 
 -- | Dual to 'bytesToInteger'.
 integerToBytes :: Integer -> [Word8]

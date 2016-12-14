@@ -27,8 +27,6 @@ import Data.List
 import Data.Word
 import Data.Bits
 import Data.Char
-import Control.Exception
-import Control.Applicative
 
 -- | Represents a line of SIC/XE assembly.
 data Line = Line (Maybe String) Mnemonic [Operand] deriving (Eq, Show)
@@ -98,17 +96,6 @@ parseOperand ('X':'\'':xs) = flip Operand OpImmediate . Left . bytesToInteger <$
 parseOperand xs            = (flip Operand OpSimple) <$> (choice numeric alphaNumeric xs)
 
 --
--- Predicates
---
- 
-isNumeric :: Char -> Bool
-isNumeric c = ord c >= ord '0' && ord c <= ord '9'
-
-isAlphabetic :: Char -> Bool
-isAlphabetic c = c' >= ord 'A' && c' <= ord 'Z'
-  where c' = ord $ toUpper c
-
---
 -- General parsers
 --
 
@@ -130,7 +117,7 @@ nonnull str = Right str
 
 -- | Parses numeric strings.
 numeric :: Token -> Result Integer
-numeric = (=<<) readEither . predicated isNumeric
+numeric = (=<<) readEither . predicated isNumber
 
 -- | Parses alphanumeric strings.
 alphaNumeric :: Token -> Result String
@@ -161,11 +148,10 @@ choice a b str = f (a str) (b str)
 -- TODO: nonnull????
 -- | Reads a binary value in hex from a 'String'.
 hexstring :: String -> Result [Word8]
-hexstring = fmap (group []) . mapM (hexchar . toUpper)
-  where group :: [Word8] -> [Word8] -> [Word8]
-        group acc [] = acc
-        group acc (x:[]) = acc ++ [x]
-        group acc (a:b:xs) = group (acc ++ [b + (a `shiftL` 4)]) xs
+hexstring = fmap (groupN []) . mapM (hexchar . toUpper)
+  where groupN acc [] = acc
+        groupN acc (x:[]) = acc ++ [x]
+        groupN acc (a:b:xs) = groupN (acc ++ [b + (a `shiftL` 4)]) xs
 
 -- | Reads a hex nybble into the low bits of a byte
 -- from a 'Char'.
@@ -174,5 +160,5 @@ hexchar a
   | between '0' '9' a = Right $ fromIntegral $ ord a - ord '0'
   | between 'A' 'F' a = Right $ fromIntegral $ (ord a - ord 'A') + 10
   | otherwise = Left $ "unexpected '" ++ (a:"'")
-  where between a b c = ord b >= ord c && ord c >= ord a
+  where between x y c = ord y >= ord c && ord c >= ord x
 

@@ -15,7 +15,6 @@ import Data.Functor.Identity
 import Data.List
 import Data.Word
 import Data.Maybe
-import Data.Either
 
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HM

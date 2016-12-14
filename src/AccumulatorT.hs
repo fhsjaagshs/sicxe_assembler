@@ -46,7 +46,7 @@ instance (Functor m) => Functor (AccumulatorT s i m) where
     where f' (a, st', i') = (f a, st', i')
 
 instance (Functor m, Monad m) => Applicative (AccumulatorT s i m) where
-  pure a = AccumulatorT $ \fin fi st i -> return (a, st, i)
+  pure a = AccumulatorT $ \_ _ st i -> return (a, st, i)
   (<*>) = ap
 
 instance (Monad m) => Monad (AccumulatorT s i m) where
