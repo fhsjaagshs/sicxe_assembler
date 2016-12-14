@@ -11,6 +11,8 @@ module Assembler
 )
 where
 
+import Debug.Trace
+
 import Common
 import Parser
 import Definitions
@@ -104,14 +106,16 @@ preprocessLine l@(Line lbl (Mnemonic m ext) oprs)
   | m `elem` ["BYTE", "WORD", "RESB", "RESW", "START", "END", "BASE"] = Right l
   | otherwise = lookupMnemonic m >>= f
   where
-    f (OpDesc _ _ fs no xform validator)
+    f (OpDesc _ _ fs no xform vs)
       | not hasEnoughOperands = Left "not enough operands"
       | not (elem 4 fs) && ext = Left "non extensible mnemonic extended"
-     -- | not operandsMatch = Left "invalid operands" -- TODO: fixme?? Might not be needed
+      | not operandsMatch = Left "invalid operands" -- TODO: fixme?? Might not be needed
       | otherwise = Right $ Line lbl (Mnemonic m ext) oprs''
       where
+        validator = fromMaybe (\_ _ -> True) $ lineFormat l >>= flip HM.lookup vs . t
+        t lf = trace ("line format " ++ show lf ++ ": " ++ show l) lf
         hasEnoughOperands = (length oprs) >= no
-        -- operandsMatch = all (uncurry validator) $ zipWith (,) oprs [0..no - 1] 
+        operandsMatch = all id $ traceShowId $ map (uncurry validator) $ zipWith (,) oprs [0..no - 1] 
         oprs' = take no oprs
         oprs''
           | fromMaybe False ((< no) <$> idxRegIdx) = map xform oprs'

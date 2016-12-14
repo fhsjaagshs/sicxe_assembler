@@ -66,7 +66,7 @@ isRegister (Operand (Right ident) OpSimple) = isJust $ lookup ident registers
 isRegister _                                = False
 
 isMemory :: Operand -> Bool
-isMemory o@(Operand v _) = isRight v && not (isRegister o)
+isMemory = not . isRegister
 
 isMemoryOrImmediate :: Operand -> Bool
 isMemoryOrImmediate o@(Operand (Right _) _) = not $ isRegister o
@@ -299,7 +299,7 @@ operations = accum (OpDesc 0x00 "" [] 0 id mempty) sortFormats $ do
     opcode 0xB8
     format 2
     numberOperands 1
-    validator 2 $ packV [isNumber]
+    validator 2 $ packV [isRegister]
   op "WD" $ do
     opcode 0xDC
     format 3
