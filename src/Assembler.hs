@@ -6,8 +6,6 @@ module Assembler
 )
 where
 
-import Debug.Trace
-
 import Common
 import Parser
 import Definitions
@@ -37,7 +35,7 @@ assemble = (=<<) f . mapM preprocessLine
       firstPass ls
       resetAddress
       st <- symbolTable
-      secondPass $ traceShow st $ ls
+      secondPass ls
 
 type Address = Word32 -- | 1MB Address
 type SymbolTable = HashMap String Address -- | Symbol table
@@ -53,7 +51,7 @@ address = fst' <$> get
 
 -- | Set the current address 
 setAddress :: Address -> Assembler ()
-setAddress addr = state $ \(_, st, b) -> ((), (traceShow ("setting addr " ++ show addr) addr, st, b))
+setAddress addr = state $ \(_, st, b) -> ((), (addr, st, b))
 
 -- | Gets the base address.
 getBase :: Assembler (Maybe Address)
@@ -89,8 +87,6 @@ getSymbol sym = fromM err . HM.lookup sym <$> symbolTable
 --
 -- Preprocessing
 --
-
--- TODO: implement numberOperands (with special concerns for ,X), transforms, and validators
 
 -- | Tests if a 'Line' is valid.
 preprocessLine :: Line -> Result Line
@@ -143,10 +139,6 @@ firstPass (l@(Line mlbl _ _):ls) = do
 secondPass :: [Line] -> Assembler (Result [[Word8]])
 secondPass = fmap sequence . mapM assembleLine
 
--- TODO: this reports wrong values (for format 3 lines, it can return format 4...)
--- THIS IS BECAUSE CERTAIN SYMBOLS AREN'T YET IN THE SYMTAB!!!!!!!!!!!!!!!!!!!!!!!!!
---
---
 -- | Determine the format of a line of SIC/XE assembler.
 lineFormat :: Line -> Maybe Int
 lineFormat l@(Line _ (Mnemonic m ext) oprs) = find (valid oprs) . opdescFormats =<< toM (lookupMnemonic m)
