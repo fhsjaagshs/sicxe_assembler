@@ -39,17 +39,15 @@ assemble = (=<<) f . mapM preprocessLine
       resetAddress
       firstPass ls
       resetAddress
-      firstPass ls
-      resetAddress
       secondPass ls
 
 type Address = Word32 -- | 1MB Address
 type SymbolTable = HashMap String Address -- | Symbol table
-type Assembler a = State (Address, SymbolTable, Maybe Address) a -- | Assembler monad
+type Assembler a = State (Address, SymbolTable, Either String (Maybe Address)) a -- | Assembler monad
 
 -- | Run your assembler.
 runAssembler :: Address -> SymbolTable -> Assembler a -> a
-runAssembler a st ass = evalState ass (a, st, Nothing)
+runAssembler a st ass = evalState ass (a, st, Right Nothing)
 
 -- | Get the current address.
 address :: Assembler Address
@@ -61,11 +59,17 @@ setAddress addr = state $ \(_, st, b) -> ((), (addr, st, b))
 
 -- | Gets the base address.
 getBase :: Assembler (Maybe Address)
-getBase = thd' <$> get
+getBase = f . thd' =<< get
+  where f (Left str) = fmap toM $ getSymbol str
+        f (Right a) = return a
 
 -- | Set the base address
 setBase :: Address -> Assembler ()
-setBase a = state $ \(addr, st, b) -> ((), (addr, st, b <|> Just a))
+setBase a = state $ \(addr, st, b) -> ((), (addr, st, Right $ Just a))
+
+setBaseValue :: Either Integer String -> Assembler ()
+setBaseValue (Left i) = setBase $ fromIntegral i
+setBaseValue (Right v) = state $ \(addr, st, b) -> ((), (addr, st, Left v))
 
 -- | Set the current address to the start of the program.
 -- Use this instead of @setAddress 0@ because 'Assembler'
@@ -115,7 +119,6 @@ preprocessLine l@(Line lbl (Mnemonic m ext) oprs)
           where
             idxRegIdx = findIndex isIndexingReg oprs
 
-
 --
 -- First Pass
 --
@@ -124,9 +127,9 @@ preprocessLine l@(Line lbl (Mnemonic m ext) oprs)
 -- the labels and recording them in the symtab.
 firstPass :: [Line] -> Assembler ()
 firstPass [] = return ()
-firstPass ((Line _ (Mnemonic "BASE" False) [a]):ls) = do
+firstPass ((Line _ (Mnemonic "BASE" False) [Operand v OpSimple]):ls) = do
   -- This won't work to set the base to a label after the base directive. 
-  bindResultM setBase $ getAddr a
+  setBaseValue v
   firstPass ls
 firstPass (l@(Line mlbl _ _):ls) = do
   maybe (return ()) (act mlbl) $ sizeofLine l
