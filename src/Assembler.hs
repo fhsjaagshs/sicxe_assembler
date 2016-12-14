@@ -125,15 +125,14 @@ firstPass [] = return ()
 firstPass (Line _ (Mnemonic "BASE" False) _:ls) = do
   address >>= setBase
   firstPass ls
-firstPass (l@(Line (Just lbl) _ _):ls) = sizeofLine l >>= either (const $ return ()) f
+firstPass (l@(Line mlbl _ _):ls) = do
+  maybe (return ()) (act mlbl) $ sizeofLine l
+  firstPass ls
   where
-    f size = do
+    act (Just lbl) size = do
       setSymbol lbl =<< address
       advanceAddress size
-      firstPass ls
-firstPass (l:ls) = do
-  sizeofLine l >>= either (const $ return ()) advanceAddress
-  firstPass ls
+    act Nothing size = advanceAddress size
 
 --
 -- Second Pass (High Level)
@@ -149,51 +148,36 @@ secondPass = fmap sequence . mapM assembleLine
 --
 --
 -- | Determine the format of a line of SIC/XE assembler.
-lineFormat :: Line -> Assembler (Result Int)
-lineFormat l@(Line _ (Mnemonic m extended) oprs) = either (return . Left) f $ lookupMnemonic m
+lineFormat :: Line -> Maybe Int
+lineFormat l@(Line _ (Mnemonic m ext) oprs) = find (valid oprs) . opdescFormats =<< toM (lookupMnemonic m)
   where
-    f = (>>= toRes) . fmap t . findM (valid oprs) . opdescFormats
-    t v = traceShow ("format " ++ show v ++ " " ++ show l) v
-    toRes mlf = do
-      a <- address
-      return $ fromM ("invalid line at address: " ++ show a) mlf
-    -- | @valid@ is a predicate that validates 
-    -- the line's operands with regard to the
-    -- instruction format(s) dictated by the mnemonic. 
-    valid []     1 = return True
-    valid (x:xs) 2 = return $ and $ map (isType OpSimple) (x:xs)
-    valid (x:_)  3
-      | extended = return False
-      | reqAbs x = return True
-      | otherwise = isRight <$> (either (return . Left) calcDisp =<< getAddr x)
-    valid _      3 = return True
-    valid _      4 = return True
-    valid _      _ = return False
+    valid []     1 = True
+    valid (x:xs) 2 = and $ map (isType OpSimple) (x:xs)
+    valid (x:_)  3 | ext = False | reqAbs x = True | otherwise = True
+    valid _      4 = True
+    valid _      _ = False
 
 -- | Determine the size of a line (directive or instruction) of SIC/XE
 -- assembler code without accessing the symbol table or assembling code.
-sizeofLine :: Line -> Assembler (Result Word32)
-sizeofLine l@(Line _ (Mnemonic m _) oprs) = do
-  lf <- lineFormat l
-  return $ (fromIntegral <$> lf) <|>  ds m oprs
+sizeofLine :: Line -> Maybe Word32
+sizeofLine l@(Line _ (Mnemonic m _) oprs) = (fromIntegral <$> lineFormat l) <|>  ds m oprs
   where
-    ds :: String -> [Operand] -> Result Word32
-    ds "BYTE" [Operand (Left v) OpImmediate] = Right $ fromIntegral $ length $ integerToBytes v
-    ds "WORD" [Operand (Left v) OpSimple] = Right 3
-    ds "RESB" [Operand (Left n) OpSimple] = Right $ fromIntegral n
-    ds "RESW" [Operand (Left n) OpSimple] = Right $ 3 * (fromIntegral n)
-    ds "START" [Operand (Left n) OpSimple] = Right $ traceShow ("START LENGTH: " ++ show n) $ fromIntegral n
-    ds "END" _ = Right 0
-    ds "BASE" _ = Right 0
-    ds mp _ = Left $ ('\'':mp) ++ "' is not a directive nor a mnemonic"
+    ds "BYTE" [Operand (Left v) OpImmediate] = Just $ fromIntegral $ length $ integerToBytes v
+    ds "WORD" [Operand (Left v) OpSimple] = Just 3
+    ds "RESB" [Operand (Left n) OpSimple] = Just $ fromIntegral n
+    ds "RESW" [Operand (Left n) OpSimple] = Just $ 3 * (fromIntegral n)
+    ds "START" [Operand (Left n) OpSimple] = Just $ fromIntegral n
+    ds "END" _ = Just 0
+    ds "BASE" _ = Just 0
+    ds mp _ = Nothing
 
 -- | Assembles a line of SIC/XE ASM as parsed by Parser.
 -- Returns a list of bytes in Big Endian order and the next address.
 assembleLine :: Line -> Assembler (Result [Word8])
 assembleLine l@(Line _ (Mnemonic m _) oprs) = do
-  lf <- lineFormat l
   g $ (,) <$> lf <*> lookupMnemonic m
   where
+    lf = fromM "invalid line" $ lineFormat l
     g (Right (f, o)) = mkinstr (opdescOpcode o) f oprs
     g (Left _)       = mkdirec m oprs
     mkinstr :: Word8 -> Int -> [Operand] -> Assembler (Result [Word8])
@@ -324,11 +308,12 @@ format2 op a b = [op, shiftL a 4 .|. b] <$ advanceAddress 2
 format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler (Result [Word8])
 format3 True op n i x memoff = return $ Right $ packBits $ prefix ++ toWordN 12 memoff
   where prefix = toWordNEnd 6 op ++ [n, i, x, False, False, False]
-format3 False op n i x memoff = bindResultM f (calcDisp memoff)
+format3 False op n i x memoff = f =<< calcDisp memoff
   where
-    f disp
-      | b || p = packBits (prefix ++ toWordN 12 disp) <$ advanceAddress 3
-      | otherwise =  format4 op n i x memoff
+    f (Left e) = return $ Left e
+    f (Right disp)
+      | b || p = Right (packBits (prefix ++ toWordN 12 disp)) <$ advanceAddress 3
+      | otherwise = return $ Left "unable to address instruction"
       where prefix = toWordNEnd 6 op ++ [n, i, x, b, p, False]
             b = isBaseRelative disp
             p = isPCRelative disp
