@@ -11,8 +11,6 @@ module Assembler
 )
 where
 
-import Debug.Trace
-
 import Common
 import Parser
 import Definitions
@@ -38,6 +36,8 @@ assemble :: [Line] -> Result [[Word8]]
 assemble = (=<<) f . mapM preprocessLine
   where
     f ls = runAssembler 0 mempty $ do
+      resetAddress
+      firstPass ls
       resetAddress
       firstPass ls
       resetAddress
@@ -125,7 +125,7 @@ preprocessLine l@(Line lbl (Mnemonic m ext) oprs)
 firstPass :: [Line] -> Assembler ()
 firstPass [] = return ()
 firstPass ((Line _ (Mnemonic "BASE" False) [a]):ls) = do
-  
+  -- This won't work to set the base to a label after the base directive. 
   bindResultM setBase $ getAddr a
   firstPass ls
 firstPass (l@(Line mlbl _ _):ls) = do
@@ -174,7 +174,7 @@ sizeofLine l@(Line _ (Mnemonic m _) oprs) = (fromIntegral <$> lineFormat l) <|> 
 -- | Assembles a line of SIC/XE ASM as parsed by Parser.
 -- Returns a list of bytes in Big Endian order and the next address.
 assembleLine :: Line -> Assembler (Result [Word8])
-assembleLine l@(Line _ (Mnemonic m _) oprs) = traceShow l $ g $ (,) <$> lf <*> lookupMnemonic m
+assembleLine l@(Line _ (Mnemonic m _) oprs) = g $ (,) <$> lf <*> lookupMnemonic m
   where
     lf = fromM "invalid line" $ lineFormat l
     g (Right (f, o)) = mkinstr (opdescOpcode o) f oprs
@@ -258,7 +258,7 @@ calcDisp m = do
   if isPCRelative $ m `minus` pc
     then return $ return $ (False, toWordNS 12 $ m `minus` pc)
     else case mb of
-      Nothing -> return $ Left "no base set, but still using base-relative addressing"
+      Nothing -> return $ Left $ "no base set, but still using base-relative addressing (offset " ++ show m ++ ", PC " ++ show pc ++ ", B Nothing"
       Just b -> if isBaseRelative $ m `minus` b
                   then return $ return $ (True, toWordN 12 $ m `minus` b)
                   else return $ Left ("offset (" ++ show m ++ ") not compatible with PC-relative or B-relative")
