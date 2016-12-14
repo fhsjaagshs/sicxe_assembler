@@ -2,7 +2,9 @@
 
 module Assembler
 (
-  assemble
+  assemble,
+  toBits,
+  incrBits
 )
 where
 
@@ -170,8 +172,7 @@ sizeofLine l@(Line _ (Mnemonic m _) oprs) = (fromIntegral <$> lineFormat l) <|> 
 -- | Assembles a line of SIC/XE ASM as parsed by Parser.
 -- Returns a list of bytes in Big Endian order and the next address.
 assembleLine :: Line -> Assembler (Result [Word8])
-assembleLine l@(Line _ (Mnemonic m _) oprs) = do
-  g $ (,) <$> lf <*> lookupMnemonic m
+assembleLine l@(Line _ (Mnemonic m _) oprs) = g $ (,) <$> lf <*> lookupMnemonic m
   where
     lf = fromM "invalid line" $ lineFormat l
     g (Right (f, o)) = mkinstr (opdescOpcode o) f oprs
@@ -245,33 +246,32 @@ format2Operand (Operand v _) = Left $ "Operand '" ++ either show id v ++ "' is n
 -- Second Pass (Low Level)
 --
 
--- 6 off for fulltest.sic
-
 -- | Calculates the address displacement from @memoff@ from either
 -- PC or B, returning if the displacement is Base-Relative as well
 -- as the displacement itself.
-calcDisp :: Address -> Assembler (Result (Bool, Word16))
-calcDisp memoff = do
-  a <- address
+calcDisp :: Address -> Assembler (Result (Bool, [Bool]))
+calcDisp m = do
+  a <- (+ 3) <$> address
   mb <- getBase
-  if traceShow (show a ++ " - "  ++ show mb) $ isPCRelative $ m `minus` a -- actually calculates to 12 when it should be 7...
-    then return $ return $ (False, m `minus` a)
+  if traceShow (show a ++ " - "  ++ show mb) $ isPCRelative $ m `minus` a
+    then return $ return $ (False, toWordNS 12 $ m `minus` a)
     else case mb of
       Nothing -> return $ Left "no base set, but still using base-relative addressing"
       Just b -> if isBaseRelative $ m `minus` b
-                  then return $ return $ (True, m `minus` b)
+                  then return $ return $ (True, toWordN 12 $ m `minus` b)
                   else return $ Left "offset not compatible with PC-relative or B-relative"
-  where m = fromIntegral memoff
-        minus :: Word32 -> Word32 -> Word16
-        minus a b
-          | a >= b = fromIntegral $ a - b
-          | a < b = setBit (fromIntegral $ b - a) 11 -- 11 is index of the MSB in a SIC/XE disp
+  where
+    minus a b
+      | a >= b = a - b
+      | otherwise = setBit (b - a) (finiteBitSize a - 1)
+    isPCRelative v 
+      | testBit v (finiteBitSize v - 1) = v >= (0xFFF `shiftR` 1)
+      | otherwise = v < (0xFFF `shiftR` 1)
+    isBaseRelative v = v >= (0xFFF `shiftR` 1) && v <= 0xFFF
 
-        isPCRelative v 
-          | testBit v 11 = v >= 0xFFF - 2048
-          | otherwise = v <= 2047 
-
-        isBaseRelative v = v >= 2048 && v < 4096
+    toWordNS n w
+      | testBit w (finiteBitSize w - 1) = reverse $ incrBits $ map not $ take 12 $ toBits w 
+      | otherwise                       = False:toWordN 11 w
 
 -- | Assembles a 24-bit word constant
 word :: Integer -> Assembler [Word8]
@@ -280,9 +280,7 @@ word i = (packBits $ toWordN 24 w) <$ advanceAddress 3
 
 -- | Assembles a binary constant
 byte :: Integer -> Assembler [Word8]
-byte bs = do
-  advanceAddress $ fromIntegral $ length bs'
-  return bs'
+byte bs = bs' <$ (advanceAddress $ fromIntegral $ length bs')
   where bs' = integerToBytes bs
 
 -- | Reserve bytes of space.
@@ -307,14 +305,12 @@ format2 op a b = [op, shiftL a 4 .|. b] <$ advanceAddress 2
 
 -- | Assembles a Format 3 instruction.
 format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler (Result [Word8])
-format3 True  op n i x memoff = do
-  advanceAddress 3
-  return $ Right $ packBits $ prefix ++ toWordN 12 memoff
+format3 True  op n i x memoff = (Right $ packBits $ prefix ++ toWordN 12 memoff) <$ advanceAddress 3
   where prefix = toWordNEnd 6 op ++ [n, i, x, False, False, False]
 format3 False op n i x memoff = f =<< calcDisp memoff
   where
     f (Left e) = return $ Left e
-    f (Right (b, disp)) = Right (packBits (prefix ++ toWordN 12 disp)) <$ advanceAddress 3
+    f (Right (b, disp)) = Right (packBits (prefix ++ disp)) <$ advanceAddress 3
       where prefix = toWordNEnd 6 op ++ [n, i, x, b, not b, False]
 
 -- | Assembles a Format 4 instruction
@@ -351,3 +347,6 @@ packBits = unfoldr f
     fillTo n d xs = xs' ++ replicate (n - length xs') d
       where xs' = take n xs
 
+incrBits :: [Bool] -> [Bool]
+incrBits (False:xs) = True:xs
+incrBits (True:xs) = True:incrBits xs

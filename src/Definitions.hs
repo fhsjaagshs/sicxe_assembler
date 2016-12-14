@@ -240,56 +240,38 @@ operations = accum (OpDesc 0x00 "" [] 0 id mempty) sortFormats $ do
     opcode 0x0C
     format 3
     format 4
-    validator 3 singleMemOrImm
-    validator 4 singleMemOrImm
   op "STB" $ do
     opcode 0x78
     format 3
     format 4
-    validator 3 singleMemOrImm
-    validator 4 singleMemOrImm
   op "STCH" $ do
     opcode 0x54
     format 3
     format 4
-    validator 3 singleMemOrImm
-    validator 4 singleMemOrImm
   op "STI" $ do
     opcode 0xD4
     format 3
     format 4
-    validator 3 singleMemOrImm
-    validator 4 singleMemOrImm
   op "STL" $ do
     opcode 0x14
     format 3
     format 4
-    validator 3 singleMemOrImm
-    validator 4 singleMemOrImm
   op "STS" $ do
     opcode 0x7C
     format 3
     format 4
-    validator 3 singleMemOrImm
-    validator 4 singleMemOrImm
   op "STSW" $ do
     opcode 0xE8
     format 3
     format 4
-    validator 3 singleMemOrImm
-    validator 4 singleMemOrImm
   op "STT" $ do
     opcode 0x84
     format 3
     format 4
-    validator 3 singleMemOrImm
-    validator 4 singleMemOrImm
   op "STX" $ do
     opcode 0x10
     format 3
     format 4
-    validator 3 singleMemOrImm
-    validator 4 singleMemOrImm
   op "SUB" $ do
     opcode 0x1C
     format 3
