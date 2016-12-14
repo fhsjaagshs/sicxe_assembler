@@ -146,6 +146,7 @@ lineFormat l@(Line _ (Mnemonic m ext) oprs) = find (valid oprs) . opdescFormats 
   where
     valid []     1 = True
     valid (x:xs) 2 = and $ map (isType OpSimple) (x:xs)
+    valid []     3 = True
     valid (x:_)  3 | ext = False | reqAbs x = True | otherwise = True
     valid _      4 = True
     valid _      _ = False
