@@ -1,3 +1,5 @@
+{-# LANGUAGE MagicHash #-}
+
 module Common
 (
   Result(..),
@@ -16,11 +18,18 @@ module Common
   fst',
   snd',
   thd',
-  onJust
+  onJust,
+  word16ToInt,
+  intToWord16
 )
 where
 
+import GHC.Prim
+import GHC.Word
+import GHC.Int
+
 import Data.Bits
+import Data.Int
 import Data.Word
 import Data.Char
 import Data.Maybe
@@ -93,6 +102,12 @@ applyResultA _ (Left err) = pure $ Left err
 
 bindResultM :: (Monad m) => (a -> m b) -> m (Result a) -> m (Result b)
 bindResultM f v = v >>= either (return . Left) (fmap Right . f)
+
+word16ToInt :: Word16 -> Int16
+word16ToInt (W16# w) = (I16# (word2Int# w))
+
+intToWord16 :: Int16 -> Word16
+intToWord16 (I16# i) = (W16# (int2Word# i))
 
 -- Splits a string on any of the following chars,
 -- respecting single quotes.

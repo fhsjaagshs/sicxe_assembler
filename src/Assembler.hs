@@ -6,6 +6,10 @@ module Assembler
 )
 where
 
+import Debug.Trace
+
+import GHC.Prim
+
 import Common
 import Parser
 import Definitions
@@ -35,7 +39,7 @@ assemble = (=<<) f . mapM preprocessLine
       firstPass ls
       resetAddress
       st <- symbolTable
-      secondPass ls
+      secondPass $ traceShow st $ ls
 
 type Address = Word32 -- | 1MB Address
 type SymbolTable = HashMap String Address -- | Symbol table
@@ -241,28 +245,33 @@ format2Operand (Operand v _) = Left $ "Operand '" ++ either show id v ++ "' is n
 -- Second Pass (Low Level)
 --
 
--- TODO: fixme: 5 too high on 
--- | Calculates the address displacement for @memoff@ from either
--- the program counter or a base
--- and the offset to calc displacement for @memoff@
-calcDisp :: Address -> Assembler (Result Int)
+-- 6 off for fulltest.sic
+
+-- | Calculates the address displacement from @memoff@ from either
+-- PC or B, returning if the displacement is Base-Relative as well
+-- as the displacement itself.
+calcDisp :: Address -> Assembler (Result (Bool, Word16))
 calcDisp memoff = do
-  a <- fromIntegral <$> address
-  mb <- fmap fromIntegral <$> getBase
-  if isPCRelative $ m - a -- actually calculates to 12 when it should be 7...
-    then return $ return $ m - a
+  a <- address
+  mb <- getBase
+  if traceShow (show a ++ " - "  ++ show mb) $ isPCRelative $ m `minus` a -- actually calculates to 12 when it should be 7...
+    then return $ return $ (False, m `minus` a)
     else case mb of
       Nothing -> return $ Left "no base set, but still using base-relative addressing"
-      Just b -> if isBaseRelative $ m - b
-                  then return $ return $ m - b
+      Just b -> if isBaseRelative $ m `minus` b
+                  then return $ return $ (True, m `minus` b)
                   else return $ Left "offset not compatible with PC-relative or B-relative"
   where m = fromIntegral memoff
+        minus :: Word32 -> Word32 -> Word16
+        minus a b
+          | a >= b = fromIntegral $ a - b
+          | a < b = setBit (fromIntegral $ b - a) 11 -- 11 is index of the MSB in a SIC/XE disp
 
-isPCRelative :: (Ord a, Num a) => a -> Bool
-isPCRelative v = v >= -2048 && v <= 2047
+        isPCRelative v 
+          | testBit v 11 = v >= 0xFFF - 2048
+          | otherwise = v <= 2047 
 
-isBaseRelative :: (Ord a, Num a) => a -> Bool
-isBaseRelative v = v >= 2048 && v < 4096
+        isBaseRelative v = v >= 2048 && v < 4096
 
 -- | Assembles a 24-bit word constant
 word :: Integer -> Assembler [Word8]
@@ -298,17 +307,15 @@ format2 op a b = [op, shiftL a 4 .|. b] <$ advanceAddress 2
 
 -- | Assembles a Format 3 instruction.
 format3 :: Bool -> Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler (Result [Word8])
-format3 True op n i x memoff = return $ Right $ packBits $ prefix ++ toWordN 12 memoff
+format3 True  op n i x memoff = do
+  advanceAddress 3
+  return $ Right $ packBits $ prefix ++ toWordN 12 memoff
   where prefix = toWordNEnd 6 op ++ [n, i, x, False, False, False]
 format3 False op n i x memoff = f =<< calcDisp memoff
   where
     f (Left e) = return $ Left e
-    f (Right disp)
-      | b || p = Right (packBits (prefix ++ toWordN 12 disp)) <$ advanceAddress 3
-      | otherwise = return $ Left "unable to address instruction"
-      where prefix = toWordNEnd 6 op ++ [n, i, x, b, p, False]
-            b = isBaseRelative disp
-            p = isPCRelative disp
+    f (Right (b, disp)) = Right (packBits (prefix ++ toWordN 12 disp)) <$ advanceAddress 3
+      where prefix = toWordNEnd 6 op ++ [n, i, x, b, not b, False]
 
 -- | Assembles a Format 4 instruction
 format4 :: Word8 -> Bool -> Bool -> Bool -> Word32 -> Assembler [Word8]
