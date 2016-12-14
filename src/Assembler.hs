@@ -4,9 +4,14 @@ module Assembler
 (
   assemble,
   toBits,
-  incrBits
+  toWordNS,
+  minus,
+  isPCRelative,
+  isBaseRelative
 )
 where
+
+import Debug.Trace
 
 import Common
 import Parser
@@ -247,27 +252,26 @@ format2Operand (Operand v _) = Left $ "Operand '" ++ either show id v ++ "' is n
 -- as the displacement itself.
 calcDisp :: Address -> Assembler (Result (Bool, [Bool]))
 calcDisp m = do
-  a <- (+ 3) <$> address
+  pc <- (+ 3) <$> address
   mb <- getBase
-  if isPCRelative $ m `minus` a
-    then return $ return $ (False, toWordNS 12 $ m `minus` a)
+  if isPCRelative $ m `minus` pc
+    then return $ return $ (False, toWordNS 12 $ m `minus` pc)
     else case mb of
       Nothing -> return $ Left "no base set, but still using base-relative addressing"
       Just b -> if isBaseRelative $ m `minus` b
                   then return $ return $ (True, toWordN 12 $ m `minus` b)
                   else return $ Left "offset not compatible with PC-relative or B-relative"
-  where
-    minus a b
-      | a >= b = a - b
-      | otherwise = setBit (b - a) (finiteBitSize a - 1)
-    isPCRelative v 
-      | testBit v (finiteBitSize v - 1) = v >= (0xFFF `shiftR` 1)
-      | otherwise = v < (0xFFF `shiftR` 1)
-    isBaseRelative v = v >= (0xFFF `shiftR` 1) && v <= 0xFFF
+minus a b
+  | a >= b = a - b
+  | otherwise = (complement (b - a)) + 1
+isPCRelative v 
+  | testBit v sidx = isPCRelative $ 1 + complement v
+  | otherwise = v <= (0xFFF `shiftR` 1)
+  where sidx = (finiteBitSize v) - 1
+isBaseRelative v = v > (0xFFF `shiftR` 1) && v <= 0xFFF
 
-    toWordNS n w
-      | testBit w (finiteBitSize w - 1) = reverse $ incrBits $ map not $ take 12 $ toBits w 
-      | otherwise                       = False:toWordN 11 w
+toWordNS n w = msb:toWordN (n - 1) w
+  where msb = testBit w $ (finiteBitSize w) - 1
 
 -- | Assembles a 24-bit word constant
 word :: Integer -> Assembler [Word8]
@@ -342,7 +346,3 @@ packBits = unfoldr f
     bit' i False = zeroBits
     fillTo n d xs = xs' ++ replicate (n - length xs') d
       where xs' = take n xs
-
-incrBits :: [Bool] -> [Bool]
-incrBits (False:xs) = True:xs
-incrBits (True:xs) = True:incrBits xs
